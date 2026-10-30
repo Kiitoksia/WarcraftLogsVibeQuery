@@ -158,9 +158,9 @@ input:focus-visible, textarea:focus-visible, button:focus-visible, a:focus-visib
 .scope-option.selected .pull-fill:not(.kill) { background: var(--accent); }
 .pull-result { text-align: right; font-variant-numeric: tabular-nums; }
 
-.filter { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
-.filter input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
-.filter input[type="number"] { width: 56px; padding: 4px 8px; }
+.filter { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
+.filter input[type="checkbox"] { width: 16px; height: 16px; margin: 0 2px 0 0; accent-color: var(--accent); }
+.filter input[type="number"] { width: 46px; padding: 4px 6px; }
 .filter input[type="number"]:disabled { opacity: 0.5; }
 
 .recent-list { display: flex; flex-direction: column; }
@@ -249,11 +249,9 @@ input:focus-visible, textarea:focus-visible, button:focus-visible, a:focus-visib
 .composer-meta { display: flex; justify-content: space-between; gap: 12px; padding: 0 4px; }
 .composer .btn { white-space: nowrap; flex: none; }
 @media (max-width: 600px) {
-  /* Phones: question box on its own row, buttons under it; suggestions scroll sideways in one row. */
+  /* Phones: question box on its own row, buttons under it. */
   .composer { flex-wrap: wrap; justify-content: flex-end; padding: 8px; }
   .composer textarea { flex-basis: 100%; padding: 6px 4px; }
-  #suggestions { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; }
-  #suggestions .chip { flex: none; }
   #composer-mode { display: none; }
 }
 
@@ -287,14 +285,17 @@ a.chip.option { color: var(--text) !important; text-decoration: none; } /* overr
 
 /* ---- Warcraft Logs-style chart: graph beside its ranked table ---- */
 
+/* Two fixed columns: graph ~60%, table ~40%. (An auto-fit grid left empty tracks reserved by the
+   full-width title, which squeezed the graph into a corner.) Stacks on narrow screens. */
 .chart-panel {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px 18px;
-  padding: 14px; border-radius: 10px;
+  display: grid; grid-template-columns: minmax(0, 3fr) minmax(340px, 2fr); gap: 14px 22px;
+  padding: 16px; border-radius: 10px;
   background: var(--bg); border: 1px solid var(--border);
 }
+@media (max-width: 1000px) { .chart-panel { grid-template-columns: minmax(0, 1fr); } }
 .chart-title { grid-column: 1 / -1; margin: 0; font: 600 14px Inter, system-ui, sans-serif; }
-.chart-canvas { position: relative; height: 320px; min-width: 0; }
-.rank-wrap { min-width: 0; max-height: 340px; overflow: auto; }
+.chart-canvas { position: relative; height: 380px; min-width: 0; }
+.rank-wrap { min-width: 0; max-height: 380px; overflow: auto; }
 .chart-note { grid-column: 1 / -1; margin: 0; font-size: 12px; color: var(--muted); }
 
 .rank-table { width: 100%; border-collapse: collapse; font-size: 13px; }

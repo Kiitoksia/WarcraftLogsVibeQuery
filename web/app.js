@@ -7,14 +7,6 @@
   const MAX_RECENT = 8;
   const PULLS_SHOWN = 8;
 
-  const EXAMPLES = [
-    "Who pressed Bloodlust on the last pull?",
-    "Who ninja pulled the boss?",
-    "Who did the most damage to the adds in phase 1?",
-    "Who died first most often tonight?",
-    "Who interrupted the most on the last pull?",
-  ];
-
   // Standard WoW class colours, as used on Warcraft Logs.
   const CLASS_COLORS = {
     DeathKnight: "#C41E3A", DemonHunter: "#A330C9", Druid: "#FF7C0A", Evoker: "#33937F",
@@ -34,7 +26,7 @@
     scopeBlock: $("scope-block"), scopeList: $("scope-list"), pullsMore: $("pulls-more"),
     deathsOn: $("filter-deaths"), deathsCount: $("filter-deaths-count"),
     recentList: $("recent-list"), clearRecent: $("clear-recent"),
-    thread: $("thread"), emptyState: $("empty-state"), suggestions: $("suggestions"),
+    thread: $("thread"), emptyState: $("empty-state"),
     composer: $("composer"), question: $("question"), askBtn: $("ask-btn"), newBtn: $("new-btn"),
     charCount: $("char-count"), composerMode: $("composer-mode"),
     glossaryDialog: $("glossary-dialog"), glossaryClose: $("glossary-close"),
@@ -115,7 +107,6 @@
 
     els.report.value = storage.get(REPORT_KEY) || "";
     renderRecent();
-    renderSuggestions(EXAMPLES);
     if (els.report.value) loadReport();
     els.question.focus();
   }
@@ -317,7 +308,6 @@
       loadReport();
     }
     state.thread = new Thread(r.report, r);
-    renderSuggestions(r.entries?.at(-1)?.data?.followUps || []);
     updateComposer();
     renderRecent();
     scrollTo(els.thread);
@@ -463,11 +453,9 @@
 
       if (!replay) {
         if (data.status === "question") {
-          renderSuggestions([]);
           els.question.placeholder = data.options?.length ? "…or type your own answer" : "Type your answer";
           els.question.focus({ preventScroll: true });
         } else {
-          renderSuggestions(data.followUps || []);
           els.question.placeholder = "Ask a follow-up, or a new question about this report…";
         }
       }
@@ -540,7 +528,6 @@
     els.thread.replaceChildren();
     els.emptyState.hidden = false;
     els.question.placeholder = "Ask a question about this report…";
-    renderSuggestions(EXAMPLES);
     renderRecent();
     updateComposer();
   }
@@ -556,15 +543,6 @@
     autoGrow();
     updateCount();
     state.thread.send(text);
-  }
-
-  function renderSuggestions(list) {
-    els.suggestions.replaceChildren(...list.map((text) => {
-      const chip = el("button", "chip", text);
-      chip.type = "button";
-      chip.onclick = () => { els.question.value = text; updateCount(); ask(); };
-      return chip;
-    }));
   }
 
   function updateComposer() {

@@ -44,9 +44,7 @@ public sealed record QueryResult(
     IReadOnlyList<ToolCallTrace> ToolCalls,
     TokenUsage Usage,
     // What the lookups actually covered, e.g. "All 29 pulls · Phase 1"; null when no data lookup ran.
-    string? Scope,
-    // 2-3 short follow-up questions the model suggests (shown as chips).
-    IReadOnlyList<string> FollowUps);
+    string? Scope);
 
 public sealed class ConversationNotFoundException() : Exception("That conversation has expired. Ask your question again.");
 
@@ -185,10 +183,6 @@ public sealed partial class QueryEngine(
         in brackets. Melee (id 1) and abilities without an id stay plain text. This applies to ask_user too: link
         abilities in the question text and give each ability option its spell_id.
         If the data can't answer the question, say so plainly and suggest how to rephrase.
-        Finally, after a real answer (not when you call ask_user), add one last line exactly in this form:
-        FOLLOWUPS: <question> | <question> | <question>
-        with 2-3 short follow-up questions (under 8 words each) a raider might ask next, e.g. narrowing to the
-        last pull, the same for another phase, or why the top player was hit. The site shows them as buttons.
         """;
 
     public string ProviderName => llm.Name;
@@ -264,13 +258,10 @@ public sealed partial class QueryEngine(
                 : "Guild glossary: (empty)",
         ];
 
-        async Task<QueryResult> Result(string status, string? answer, string? question = null, IReadOnlyList<AskOption>? options = null)
-        {
-            var (text, followUps) = SplitFollowUps(answer);
-            return new(conv.Id, status, text, question, options ?? [], charts,
+        async Task<QueryResult> Result(string status, string? answer, string? question = null, IReadOnlyList<AskOption>? options = null) =>
+            new(conv.Id, status, answer, question, options ?? [], charts,
                 [.. links.DistinctBy(l => l.Url).Take(4)], await PlayersAsync(conv.ReportCode, ct), traces, usage.ToUsage(),
-                await ScopeAsync(conv.ReportCode, traces, ct), followUps);
-        }
+                await ScopeAsync(conv.ReportCode, traces, ct));
 
         // The last round withholds tools so the model answers with what it has instead of giving up.
         for (var round = 0; round <= _options.MaxToolRounds; round++)
@@ -322,17 +313,6 @@ public sealed partial class QueryEngine(
         }
 
         return await Result("answer", "No answer was produced.");
-    }
-
-    /// <summary>Pulls the trailing "FOLLOWUPS: a | b | c" line off the answer.</summary>
-    private static (string? Text, IReadOnlyList<string> FollowUps) SplitFollowUps(string? answer)
-    {
-        if (answer is null) return (null, []);
-        var m = FollowUpsRegex().Match(answer);
-        if (!m.Success) return (answer, []);
-        var followUps = m.Groups["list"].Value.Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
-            .Where(f => f.Length is > 0 and <= 80).Take(3).ToList();
-        return (answer.Remove(m.Index, m.Length).TrimEnd(), followUps);
     }
 
     private static readonly string[] DataTools = ["get_table", "get_events", "count_events", "show_chart", "get_pull_timeline"];
@@ -474,9 +454,4 @@ public sealed partial class QueryEngine(
     private static partial Regex ReportCodeRegex();
 
     [GeneratedRegex(@"[?#&]fight=(?<fight>\d+)")]
-    private static partial Regex FightParamRegex();
-
-    // The last "FOLLOWUPS:" line (optionally bolded/bulleted by the model), at the end of the answer.
-    [GeneratedRegex(@"\n?[ \t>*_-]*\**FOLLOWUPS:?\**[ \t]*(?<list>[^\n]*)\s*$", RegexOptions.IgnoreCase)]
-    private static partial Regex FollowUpsRegex();
-}
+    private static partial Regex FightParamRegex();}
