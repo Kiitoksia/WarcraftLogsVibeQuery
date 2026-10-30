@@ -114,7 +114,7 @@
 
   // ---- Filters ------------------------------------------------------------------
 
-  // Filters are sent with every message; the server applies them to all of Claude's lookups.
+  // Filters are sent with every message; the server applies them to all of the AI's lookups.
   function currentSettings() {
     const n = Math.round(Number(els.deathsCount.value));
     return { deathCutoff: els.deathsOn.checked && n >= 1 && n <= 30 ? n : null };
@@ -234,7 +234,7 @@
 
   // ---- Conversation thread ------------------------------------------------------
 
-  // One card per conversation: the question, Claude's answers/questions, and a reply box.
+  // One card per conversation: the question, the AI's answers/questions, and a reply box.
   class Thread {
     constructor(report) {
       this.report = report;

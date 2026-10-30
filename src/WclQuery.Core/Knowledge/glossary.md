@@ -1,6 +1,6 @@
 # Guild glossary
 
-What our raiders mean by informal names for mechanics. Claude reads this before every question,
+What our raiders mean by informal names for mechanics. The AI reads this before every question,
 so it can use the right ability straight away instead of guessing or asking.
 
 Officers edit this from the site's Glossary button; changes apply to the next question.

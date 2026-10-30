@@ -90,15 +90,19 @@ Pushing changes under `web/` redeploys.
 
 ## Costs
 
-Every answer shows its token count and estimated cost under "How I found this", and the API logs the
-same per question (input, cache reads, cache writes, output). To spend less:
+Every answer shows its token count under "How I found this" (plus an estimated cost when prices are known),
+and the API logs the same per question (input, cache reads, cache writes, output).
 
-- **Model** (`Claude__Model`): `claude-opus-5-5` (best), `claude-sonnet-5-5` (half the price),
-  `claude-haiku-5-5` (about 40× cheaper than Opus; fine for simple lookups). No deploy needed; change the
-  Azure setting.
-- **Effort** (`Claude__Effort`): `low` thinks less and costs less.
-- The conversation is prompt-cached between lookup rounds, so resent history costs a tenth of normal.
-  Tool results are trimmed (`ReportTools.Prune`, `MaxResultChars`) because they're resent every round.
+**Which model** is a setting, `Llm:Provider`, so you can switch without a deploy:
+
+- `azure-openai`: a GPT deployment on Microsoft Foundry (`AzureOpenAI:Endpoint`, `Deployment`, `ApiKey`,
+  `ReasoningEffort`). Uses the Responses API, because newer reasoning models only allow tools there.
+  Set `AzureOpenAI:InputPricePerMTok` / `OutputPricePerMTok` / `CachedInputPricePerMTok` to see cost estimates.
+- `anthropic`: Claude (`Claude:Model` = `claude-opus-5-5`, `claude-sonnet-5-5` or `claude-haiku-5-5`;
+  `Claude:Effort`).
+
+Both cache the stable part of each request between lookup rounds. Tool results are trimmed
+(`ReportTools.Prune`, `MaxResultChars`) because they're resent every round.
 
 ## Guild glossary
 

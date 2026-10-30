@@ -63,8 +63,13 @@ then **Apply** and confirm the restart.
 |---|---|
 | `WarcraftLogs__ClientId` | Warcraft Logs client ID |
 | `WarcraftLogs__ClientSecret` | Warcraft Logs client secret |
-| `Claude__ApiKey` | Anthropic key (workspace-scoped) |
-| `Claude__Model` | `claude-opus-5-5` |
+| `Llm__Provider` | `azure-openai` (a GPT deployment on Foundry) or `anthropic` (Claude) |
+| `AzureOpenAI__Endpoint` | Foundry / Azure OpenAI endpoint, e.g. `https://my-resource.openai.azure.com/` |
+| `AzureOpenAI__Deployment` | the deployment name, e.g. `gpt-6.1-sol` |
+| `AzureOpenAI__ApiKey` | the deployment's key |
+| `AzureOpenAI__ReasoningEffort` | `low` (default), `medium` or `high` |
+| `Claude__ApiKey` | Anthropic key (workspace-scoped), only needed for `anthropic` |
+| `Claude__Model` | `claude-opus-5-5`, `claude-sonnet-5-5` or `claude-haiku-5-5` |
 | `Claude__Effort` | `medium` |
 | `Discord__ClientId` | from step 3 |
 | `Discord__ClientSecret` | from step 3 |
