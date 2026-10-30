@@ -164,14 +164,34 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
         var eventType = args.OptionalString("event_type");
         if (eventType is not null && !eventType.All(char.IsAsciiLetterLower))
             throw new ToolInputException("event_type must be a lowercase event type such as damage, applydebuff, cast.");
+        var value = ValueArg(args);
 
-        // A single pull measured in damage/healing uses Warcraft Logs' own per-second graph (smoothest);
-        // everything else (counts, several pulls) is built from the raw events.
-        if (q.FightIds.Count == 1 && measure == "amount" && eventType is null
+        // A single pull measured in plain damage/healing uses Warcraft Logs' own per-second graph (smoothest);
+        // everything else (counts, absorbed damage, several pulls) is built from the raw events.
+        if (q.FightIds.Count == 1 && measure == "amount" && value == "amount" && eventType is null
             && q.DataType is "DamageDone" or "DamageTaken" or "Healing")
             return await GraphChartAsync(report, args, q, ct);
-        return await EventChartAsync(report, args, q, measure, eventType, ct);
+        return await EventChartAsync(report, args, q, measure, value, eventType, ct);
     }
+
+    /// <summary>
+    /// Which number of each damage/heal event to add up: "amount" (what landed), "absorbed" (what a shield or
+    /// absorb soaked, i.e. damage done into a shield) or "total" (both).
+    /// </summary>
+    private static string ValueArg(ToolArgs args)
+    {
+        var value = args.OptionalString("value") ?? "amount";
+        return value is "amount" or "absorbed" or "total"
+            ? value
+            : throw new ToolInputException("value must be amount, absorbed or total.");
+    }
+
+    private static double EventValue(JsonElement e, string value) => value switch
+    {
+        "absorbed" => GetDouble(e, "absorbed") ?? 0,
+        "total" => (GetDouble(e, "amount") ?? 0) + (GetDouble(e, "absorbed") ?? 0),
+        _ => GetDouble(e, "amount") ?? 0,
+    };
 
     private async Task<ToolOutput> GraphChartAsync(Report report, ToolArgs args, ReportQuery q, CancellationToken ct)
     {
@@ -220,7 +240,7 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
     /// (hits, debuffs, casts, deaths…) as well as amounts. Pets are folded into their owners; only players are ranked.
     /// </summary>
     private async Task<ToolOutput> EventChartAsync(Report report, ToolArgs args, ReportQuery q, string measure,
-        string? eventType, CancellationToken ct)
+        string value, string? eventType, CancellationToken ct)
     {
         eventType ??= DefaultEventTypes.GetValueOrDefault(q.DataType);
         if (eventType is not null)
@@ -267,17 +287,21 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
             }
 
             if (!values.TryGetValue(player.Id, out var row)) values[player.Id] = row = new double[slotCount];
-            row[slot] += measure == "count" ? 1 : GetDouble(e, "amount") ?? 0;
+            row[slot] += measure == "count" ? 1 : EventValue(e, value);
         }
         if (values.Count == 0) return new ToolOutput("No data for that chart (nothing matched the filters).");
 
-        var unit = measure == "count" ? CountUnit(q.DataType, eventType) : (q.DataType == "Healing" ? "Healing" : q.DataType == "DamageTaken" ? "Damage taken" : "Damage");
+        var unit = measure == "count" ? CountUnit(q.DataType, eventType)
+            : value == "absorbed" ? (q.DataType == "Healing" ? "Healing absorbed" : "Damage into shields")
+            : q.DataType == "Healing" ? "Healing" : q.DataType == "DamageTaken" ? "Damage taken" : "Damage";
         var series = values
             .Select(kv =>
             {
                 var actor = report.ActorsById[kv.Key];
                 var total = kv.Value.Sum();
-                var secondary = perPull ? total / fights.Count : measure == "amount" ? total / Math.Max(1, durationSec) : total;
+                var secondary = perPull ? total / fights.Count
+                    : measure == "amount" ? total / Math.Max(1, durationSec)
+                    : total / Math.Max(1.0 / 60, durationSec / 60); // counts on one pull: per minute
                 // Amounts on a timeline are shown per second (like DPS); counts stay per bucket.
                 var points = perPull || measure == "count"
                     ? kv.Value.Select(v => Math.Round(v, 1)).ToList()
@@ -296,7 +320,7 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
             perPull ? "pulls" : "timeline",
             metric,
             TotalLabel: unit,
-            SecondaryLabel: perPull ? "Avg / pull" : measure == "amount" ? metric : unit,
+            SecondaryLabel: perPull ? "Avg / pull" : measure == "amount" ? metric : "Per min",
             StartSec: perPull ? 0 : (q.StartTime - fight.StartTime) / 1000.0,
             IntervalSec: bucketSec,
             DurationSec: durationSec,
@@ -396,6 +420,7 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
         }
         var groupBy = args.OptionalString("group_by") ?? "target";
         var top = Math.Clamp(args.OptionalInt("top") ?? 25, 1, 100);
+        var value = ValueArg(args);
 
         var page = await wcl.GetEventsAsync(reportCode, q, MaxCountedEvents, ct);
 
@@ -422,14 +447,15 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
             .Select(g => (
                 Key: g.Key,
                 Count: g.Count(),
-                Amount: g.Sum(e => GetDouble(e, "amount") ?? 0),
+                Amount: g.Sum(e => EventValue(e, value)),
                 Fights: g.Select(e => GetInt(e, "fight")).Distinct().Count()))
-            .OrderByDescending(r => r.Count)
+            .OrderByDescending(r => value == "amount" ? r.Count : r.Amount)
             .ToList();
 
         var sb = new StringBuilder();
         sb.AppendLine(DescribeWindow(report, q));
-        sb.AppendLine($"{page.Data.Count} events scanned, {rows.Count} groups (by {groupBy}). count | {groupBy} | total amount | fights it appears in:");
+        var amountLabel = value switch { "absorbed" => "total absorbed", "total" => "total amount+absorbed", _ => "total amount" };
+        sb.AppendLine($"{page.Data.Count} events scanned, {rows.Count} groups (by {groupBy}). count | {groupBy} | {amountLabel} | fights it appears in:");
         foreach (var r in rows.Take(top))
             sb.AppendLine($"  {r.Count} | {r.Key} | {(r.Amount > 0 ? r.Amount.ToString("N0", CultureInfo.InvariantCulture) : "-")} | {r.Fights}");
         if (rows.Count > top) sb.AppendLine($"  …{rows.Count - top} more groups");
@@ -804,6 +830,7 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
                         ("data_type", Prop(new { type = "string", @enum = EventDataTypes })),
                         ("event_type", Prop(new { type = "string", description = "Only this event type, e.g. damage, applydebuff, applybuff, cast, death, interrupt. Strongly recommended: Debuffs data includes apply AND remove events." })),
                         ("group_by", Prop(new { type = "string", @enum = new[] { "target", "source", "ability", "target_ability", "source_ability", "fight", "type" }, description = "Default target (the player affected)." })),
+                        ("value", Prop(new { type = "string", @enum = new[] { "amount", "absorbed", "total" }, description = "What to total for damage/heal events: amount that landed (default), absorbed (soaked by a shield/absorb), or both. Rows are sorted by this total when it isn't amount." })),
                         ("top", Prop(new { type = "integer", description = "Rows to return (default 25)." }))),
                     Required = ["data_type"],
                 },
@@ -827,6 +854,7 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
                         ["title"] = Prop(new { type = "string", description = "Short chart title, e.g. 'Caustic Waves hits — Phase 1, all pulls'." }),
                         ["data_type"] = Prop(new { type = "string", @enum = ChartDataTypes }),
                         ["measure"] = Prop(new { type = "string", @enum = new[] { "amount", "count" } }),
+                        ["value"] = Prop(new { type = "string", @enum = new[] { "amount", "absorbed", "total" }, description = "For measure amount: what landed (default), what a shield/absorb soaked (\"absorbed\": damage done into a shield), or both." }),
                         ["event_type"] = Prop(new { type = "string", description = "Override which event type counts, e.g. damage, applydebuff, cast. Sensible default per data_type." }),
                         ["group_by"] = Prop(new { type = "string", @enum = new[] { "source", "target" }, description = "Which side is the player being ranked. Default: target for DamageTaken/Debuffs/Buffs/Deaths, source otherwise." }),
                         ["fight_id"] = windowProps["fight_id"],

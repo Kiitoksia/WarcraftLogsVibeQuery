@@ -124,6 +124,36 @@ app.MapPut("/api/glossary", (GlossaryUpdate req, DiscordAuth auth, GlossaryStore
     return Results.Ok(new { g.Text, g.UpdatedBy, g.UpdatedAt, canEdit = true });
 });
 
+// Drafts a glossary change from an editor's plain-English note. Nothing is saved: the editor reviews the draft.
+app.MapPost("/api/glossary/draft", async (GlossaryDraftRequest req, DiscordAuth auth, GlossaryStore glossary,
+    GlossaryAssistant assistant, HttpContext ctx, ILogger<Program> logger, CancellationToken ct) =>
+{
+    if (auth.GetUser(ctx) is not { } user) return Results.Unauthorized();
+    if (!user.CanEditGlossary) return Results.Json(new { error = "Only officers and listed glossary editors can edit the glossary." }, statusCode: StatusCodes.Status403Forbidden);
+    if (string.IsNullOrWhiteSpace(req.Note) || req.Note.Length > 2000)
+        return Results.BadRequest(new { error = "Write a note of up to 2,000 characters." });
+
+    var report = QueryEngine.ParseReport(req.Report ?? "")?.Code;
+    logger.LogInformation("{User} drafted a glossary change: {Note}", user.Name, req.Note);
+    try
+    {
+        var (text, usage) = await assistant.DraftAsync(glossary.Get().Text, req.Note.Trim(), report, ct);
+        logger.LogInformation("Glossary draft: {Input} input + {CacheRead} cache read tokens, {Output} output",
+            usage.Input, usage.CacheRead, usage.Output);
+        return Results.Ok(new { text });
+    }
+    catch (Exception ex) when (ex is WarcraftLogsException or InvalidOperationException)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+    catch (Exception ex) when (IsModelServiceError(ex))
+    {
+        logger.LogError(ex, "Model API call failed while drafting the glossary");
+        return Results.Json(new { error = "The AI service is unavailable right now. Try again shortly." },
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+}).RequireRateLimiting("ask");
+
 // ---- Questions ----------------------------------------------------------------
 
 app.MapPost("/api/ask", async (AskRequest req, DiscordAuth auth, QueryEngine engine, HttpContext ctx,
@@ -163,6 +193,10 @@ app.MapPost("/api/ask/{conversationId}/reply", async (string conversationId, Rep
 
 app.Run();
 
+// Errors from Claude (Anthropic SDK) or Azure OpenAI (System.ClientModel) calls.
+static bool IsModelServiceError(Exception ex) =>
+    ex is Anthropic.Exceptions.AnthropicApiException or System.ClientModel.ClientResultException;
+
 // Null means the settings were invalid.
 static QuerySettings? ToSettings(SettingsDto? dto) => dto?.DeathCutoff switch
 {
@@ -186,9 +220,9 @@ static async Task<IResult> RunAsync(Func<Task<QueryResult>> run, ILogger logger)
     {
         return Results.BadRequest(new { error = ex.Message });
     }
-    catch (Anthropic.Exceptions.AnthropicApiException ex)
+    catch (Exception ex) when (IsModelServiceError(ex))
     {
-        logger.LogError(ex, "Claude API call failed");
+        logger.LogError(ex, "Model API call failed");
         return Results.Json(new { error = "The AI service is unavailable right now. Try again shortly." },
             statusCode: StatusCodes.Status502BadGateway);
     }
@@ -197,6 +231,8 @@ static async Task<IResult> RunAsync(Func<Task<QueryResult>> run, ILogger logger)
 internal sealed record SettingsDto(int? DeathCutoff);
 
 internal sealed record GlossaryUpdate(string? Text);
+
+internal sealed record GlossaryDraftRequest(string? Note, string? Report);
 
 internal sealed record AskRequest(string? Report, string Question, int? Fight, SettingsDto? Settings);
 

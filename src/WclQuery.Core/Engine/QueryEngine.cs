@@ -25,6 +25,9 @@ public sealed record ToolCallTrace(string Name, string Input, string? Error, lon
 /// <summary>A player in the report, so the site can colour their name by class.</summary>
 public sealed record PlayerInfo(string Name, string Class);
 
+/// <summary>An answer button for a clarifying question; abilities carry a spell id and icon for the Wowhead tooltip.</summary>
+public sealed record AskOption(string Label, long? SpellId, string? Icon);
+
 /// <summary>
 /// The outcome of one user message. Status is "answer" (Answer is markdown) or "question"
 /// (the model needs more context: Question plus optional Options to offer as buttons).
@@ -34,7 +37,7 @@ public sealed record QueryResult(
     string Status,
     string? Answer,
     string? Question,
-    IReadOnlyList<string> Options,
+    IReadOnlyList<AskOption> Options,
     IReadOnlyList<ChartData> Charts,
     IReadOnlyList<WclLink> Links,
     IReadOnlyList<PlayerInfo> Players,
@@ -82,8 +85,17 @@ public sealed partial class QueryEngine(
                     ["options"] = new JsonObject
                     {
                         ["type"] = "array",
-                        ["items"] = new JsonObject { ["type"] = "string" },
-                        ["description"] = "2-5 short answer choices shown as buttons, e.g. ability names. Don't add an 'other' / 'something else' choice: the user always has a text box to type their own reply.",
+                        ["items"] = new JsonObject
+                        {
+                            ["type"] = "object",
+                            ["properties"] = new JsonObject
+                            {
+                                ["label"] = new JsonObject { ["type"] = "string", ["description"] = "Button text, e.g. the ability name." },
+                                ["spell_id"] = new JsonObject { ["type"] = "integer", ["description"] = "The ability's spell id, when the option is an ability. Shows its icon and Wowhead tooltip." },
+                            },
+                            ["required"] = new JsonArray("label"),
+                        },
+                        ["description"] = "2-5 short answer choices shown as buttons. Include spell_id for every ability. Don't add an 'other' / 'something else' choice: the user always has a text box to type their own reply.",
                     },
                 },
                 ["required"] = new JsonArray("question"),
@@ -104,7 +116,13 @@ public sealed partial class QueryEngine(
           phase to filter; it works across many fights at once.
         - Times users give ("at 2:30", "around 1 minute in") are relative to the start of that fight.
           Use a window of a few seconds either side unless they give an exact range.
-        - Adds and bosses: find the actor id in the overview (or by name) and pass it as target_id.
+        - Adds and bosses: find the actor id in the overview (or by name) and pass it as target_id. If several
+          actor ids share the name (e.g. two "Blightscale Spawn" entries), cover them all in one lookup with
+          filter_expression "target.name = 'Blightscale Spawn'" instead of target_id, and draw one chart, not one each.
+        - Damage into shields/absorbs ("damage to the shield", "who broke the shield", "shielded X"): the damage a
+          shield soaks is recorded as the absorbed part of each hit, not its amount. Use DamageDone with target_id,
+          filter_expression "absorbedDamage > 0" and value "absorbed" (on count_events or show_chart; measure
+          amount). Don't ask which buff is "the shield" when this filter answers the question.
         - Prefer get_table for damage/healing totals, count_events for "how many times / who got hit by X
           the most", and get_events for "who did X / when did X happen".
         - Players describe mechanics informally ("eggs", "pools", "beams", "soak"). First check the guild
@@ -150,7 +168,8 @@ public sealed partial class QueryEngine(
         Write player names exactly as they appear in the log; the site colours them by class.
         Write every ability you mention as a Wowhead link using its spell id from the tool results, e.g.
         [Rancid Yolk](https://www.wowhead.com/spell=1312150), so the site can show a tooltip. Don't repeat the id
-        in brackets. Melee (id 1) and abilities without an id stay plain text.
+        in brackets. Melee (id 1) and abilities without an id stay plain text. This applies to ask_user too: link
+        abilities in the question text and give each ability option its spell_id.
         If the data can't answer the question, say so plainly and suggest how to rephrase.
         """;
 
@@ -227,7 +246,7 @@ public sealed partial class QueryEngine(
                 : "Guild glossary: (empty)",
         ];
 
-        async Task<QueryResult> Result(string status, string? answer, string? question = null, IReadOnlyList<string>? options = null) =>
+        async Task<QueryResult> Result(string status, string? answer, string? question = null, IReadOnlyList<AskOption>? options = null) =>
             new(conv.Id, status, answer, question, options ?? [], charts,
                 [.. links.DistinctBy(l => l.Url).Take(4)], await PlayersAsync(conv.ReportCode, ct), traces, usage.ToUsage());
 
@@ -242,12 +261,12 @@ public sealed partial class QueryEngine(
                 return await Result("answer", "Sorry, I can't answer that one.");
 
             var toolResults = new List<LlmToolResult>();
-            (string Id, string Question, List<string> Options)? ask = null;
+            (string Id, string Question, List<AskOption> Options)? ask = null;
             foreach (var call in turn.ToolCalls)
             {
                 if (call.Name == AskUserTool && ask is null)
                 {
-                    ask = ParseAsk(call);
+                    ask = await ParseAskAsync(call, conv.ReportCode, ct);
                     traces.Add(new(call.Name, JsonSerializer.Serialize(call.Input), null, 0));
                 }
                 else if (call.Name == AskUserTool)
@@ -299,14 +318,36 @@ public sealed partial class QueryEngine(
         }
     }
 
-    private static (string Id, string Question, List<string> Options) ParseAsk(LlmToolCall call)
+    private async Task<(string Id, string Question, List<AskOption> Options)> ParseAskAsync(
+        LlmToolCall call, string reportCode, CancellationToken ct)
     {
         var question = call.Input.TryGetValue("question", out var q) && q.ValueKind == JsonValueKind.String
             ? q.GetString()!
             : "Could you give me a bit more detail?";
-        var options = call.Input.TryGetValue("options", out var o) && o.ValueKind == JsonValueKind.Array
-            ? o.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).Take(5).ToList()
-            : [];
+
+        Report? report = null;
+        try { report = await wcl.GetReportAsync(reportCode, ct); } // cached; used to look up ability icons
+        catch (WarcraftLogsException) { }
+
+        var options = new List<AskOption>();
+        if (call.Input.TryGetValue("options", out var o) && o.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in o.EnumerateArray().Take(5))
+            {
+                // Accept plain strings too, in case a model ignores the object shape.
+                if (item.ValueKind == JsonValueKind.String)
+                {
+                    options.Add(new AskOption(item.GetString()!, null, null));
+                    continue;
+                }
+                if (item.ValueKind != JsonValueKind.Object || !item.TryGetProperty("label", out var label)) continue;
+                long? spellId = item.TryGetProperty("spell_id", out var s) && s.ValueKind == JsonValueKind.Number
+                    && s.TryGetInt64(out var id) && id > 1 ? id : null;
+                var icon = spellId is long sid && report?.AbilitiesById.TryGetValue(sid, out var ability) == true
+                    ? ability.Icon : null;
+                options.Add(new AskOption(label.GetString() ?? "?", spellId, icon));
+            }
+        }
         return (call.Id, question, options);
     }
 

@@ -74,6 +74,15 @@
     </div>
     <p class="muted">What the guild's names for mechanics mean. The AI reads this before every question.</p>
     <p id="glossary-meta" class="muted"></p>
+    <div id="glossary-ai" class="glossary-ai" hidden>
+      <label for="glossary-note" class="field-label">Add or change something, in plain English</label>
+      <textarea id="glossary-note" rows="2" maxlength="2000" placeholder='e.g. "shielded Malacrass" means Veil of Twilight; damage to the shield is the absorbed damage'></textarea>
+      <div class="glossary-ai-actions">
+        <span id="glossary-ai-status" class="muted">The AI rewrites the glossary for you to check before saving.</span>
+        <button id="glossary-draft" class="btn small" type="button">Draft with AI</button>
+      </div>
+    </div>
+    <p id="glossary-draft-note" class="glossary-draft-note" hidden>AI draft: check it, then Save (or Cancel to discard).</p>
     <div id="glossary-view" class="markdown glossary-view"></div>
     <textarea id="glossary-editor" class="glossary-editor" spellcheck="true" hidden></textarea>
     <p id="glossary-error" class="error" hidden></p>

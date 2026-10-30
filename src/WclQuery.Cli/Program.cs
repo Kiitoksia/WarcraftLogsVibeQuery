@@ -122,5 +122,5 @@ static void Print(QueryResult result)
         $" (total input {u.TotalInput}) ≈ ${u.EstimatedCostUsd?.ToString("0.0000") ?? "?"}\n");
     if (result.Answer is not null) Console.WriteLine(result.Answer);
     if (result.Status == "question")
-        Console.WriteLine($"\n[QUESTION] {result.Question}\n[OPTIONS] {string.Join(" | ", result.Options)}");
+        Console.WriteLine($"\n[QUESTION] {result.Question}\n[OPTIONS] {string.Join(" | ", result.Options.Select(o => o.SpellId is long id ? $"{o.Label} ({id}, icon {o.Icon})" : o.Label))}");
 }

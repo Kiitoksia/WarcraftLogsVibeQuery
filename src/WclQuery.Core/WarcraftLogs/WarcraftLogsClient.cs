@@ -41,7 +41,7 @@ public sealed class WarcraftLogsClient(
               }
               masterData(translate: true) {
                 actors { id name type subType server petOwner gameID }
-                abilities { gameID name type }
+                abilities { gameID name type icon }
               }
             }
           }

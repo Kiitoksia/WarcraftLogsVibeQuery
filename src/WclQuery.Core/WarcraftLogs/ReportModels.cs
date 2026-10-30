@@ -139,6 +139,8 @@ public sealed class Ability
     public long GameId { get; set; }
     public string Name { get; set; } = "";
     public int Type { get; set; }
+    /// <summary>Icon file name, e.g. spell_nature_bloodlust.jpg (Wowhead hosts the images).</summary>
+    public string? Icon { get; set; }
 }
 
 public sealed class EventPage

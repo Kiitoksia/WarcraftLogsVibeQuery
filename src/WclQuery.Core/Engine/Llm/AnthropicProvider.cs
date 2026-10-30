@@ -75,10 +75,15 @@ public sealed class AnthropicProvider(IOptions<AnthropicOptions> options) : ILlm
                         : new TextBlockParam { Text = text })
                     .ToList(),
                 OutputConfig = new OutputConfig { Effort = ParseEffort(options.Effort) },
-                Tools = [.. tools.Select(ToTool)],
-                ToolChoice = allowTools ? new ToolChoiceAuto() : new ToolChoiceNone(),
                 Messages = _messages,
             };
+            // tool_choice is only allowed alongside tools.
+            if (tools.Count > 0)
+                request = request with
+                {
+                    Tools = [.. tools.Select(ToTool)],
+                    ToolChoice = allowTools ? new ToolChoiceAuto() : new ToolChoiceNone(),
+                };
             // Cache the conversation so far: each round resends the whole history, and cached tokens are far
             // cheaper than normal input. Only set when on: an explicit null would be sent to the API.
             if (options.CacheConversation)

@@ -84,8 +84,10 @@ public sealed class AzureOpenAIProvider : ILlmProvider
                 Instructions = string.Join("\n\n", systemParts),
                 PreviousResponseId = _lastResponseId,
                 MaxOutputTokenCount = 16000,
-                ToolChoice = allowTools ? ResponseToolChoice.CreateAutoChoice() : ResponseToolChoice.CreateNoneChoice(),
             };
+            // tool_choice is only allowed alongside tools.
+            if (tools.Count > 0)
+                request.ToolChoice = allowTools ? ResponseToolChoice.CreateAutoChoice() : ResponseToolChoice.CreateNoneChoice();
             foreach (var item in _pending) request.InputItems.Add(item);
             foreach (var t in tools)
                 request.Tools.Add(ResponseTool.CreateFunctionTool(t.Name, BinaryData.FromString(t.InputSchema.ToJsonString()),

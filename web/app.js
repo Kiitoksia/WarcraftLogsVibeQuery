@@ -33,7 +33,8 @@
     glossaryBtn: $("glossary-btn"), glossaryDialog: $("glossary-dialog"), glossaryClose: $("glossary-close"),
     glossaryMeta: $("glossary-meta"), glossaryView: $("glossary-view"), glossaryEditor: $("glossary-editor"),
     glossaryError: $("glossary-error"), glossaryEdit: $("glossary-edit"), glossaryCancel: $("glossary-cancel"),
-    glossarySave: $("glossary-save"),
+    glossarySave: $("glossary-save"), glossaryAi: $("glossary-ai"), glossaryNote: $("glossary-note"),
+    glossaryDraft: $("glossary-draft"), glossaryAiStatus: $("glossary-ai-status"), glossaryDraftNote: $("glossary-draft-note"),
   };
 
   const storage = {
@@ -344,12 +345,26 @@
         if (data.options?.length) {
           const opts = el("div", "chips");
           for (const option of data.options) {
-            const b = el("button", "chip option", option);
-            b.type = "button";
+            const label = typeof option === "string" ? option : option.label;
+            let b;
+            if (option.spellId) {
+              // Ability options are Wowhead links styled as buttons: Wowhead's script only adds its icon and
+              // hover tooltip to links. Clicking still answers instead of opening Wowhead.
+              b = el("a", "chip option", label);
+              b.href = `https://www.wowhead.com/spell=${option.spellId}`;
+              b.setAttribute("role", "button");
+            } else {
+              b = el("button", "chip option", label);
+              b.type = "button";
+            }
             // "Something else / other / I'll type it" means "let me type", so focus the box instead of sending.
-            b.onclick = /something else|\bother\b|type it|i'll type|let me type|own answer/i.test(option)
-              ? () => { this.replyInput.placeholder = "Type your answer"; this.replyInput.focus(); }
-              : () => this.send(option);
+            const letMeType = /something else|\bother\b|type it|i'll type|let me type|own answer/i.test(label);
+            b.onclick = (e) => {
+              e.preventDefault();
+              if (b.classList.contains("disabled")) return;
+              if (letMeType) { this.replyInput.placeholder = "Type your answer"; this.replyInput.focus(); }
+              else this.send(label);
+            };
             opts.append(b);
           }
           q.append(opts);
@@ -381,7 +396,11 @@
     }
 
     disableOptions() {
-      for (const b of this.log.querySelectorAll(".option")) b.disabled = true;
+      for (const b of this.log.querySelectorAll(".option")) {
+        b.disabled = true; // buttons
+        b.classList.add("disabled"); // link-style ability options can't be disabled natively
+        b.setAttribute("aria-disabled", "true");
+      }
     }
 
     error(message) {
@@ -530,8 +549,10 @@
   // ---- Glossary -----------------------------------------------------------------
 
   let glossaryText = "";
+  let canEditGlossary = false;
 
   async function openGlossary() {
+    canEditGlossary = false;
     setGlossaryEditing(false);
     els.glossaryError.hidden = true;
     els.glossaryMeta.textContent = "Loading…";
@@ -555,19 +576,46 @@
     els.glossaryMeta.textContent = g.updatedBy
       ? `Last edited by ${g.updatedBy} on ${new Date(g.updatedAt).toLocaleString()}`
       : "Not edited yet (this is the built-in starting version).";
+    canEditGlossary = !!g.canEdit;
     els.glossaryEdit.hidden = !g.canEdit;
+    els.glossaryAi.hidden = !g.canEdit;
     if (!g.canEdit) els.glossaryMeta.textContent += " · Only officers and listed editors can edit it.";
   }
 
-  function setGlossaryEditing(editing) {
+  // draft: text to put in the editor instead of the saved glossary (an AI draft to review).
+  function setGlossaryEditing(editing, draft) {
     els.glossaryView.hidden = editing;
     els.glossaryEditor.hidden = !editing;
-    els.glossaryEdit.hidden = editing;
+    els.glossaryEdit.hidden = editing || !canEditGlossary;
+    els.glossaryAi.hidden = editing || !canEditGlossary;
     els.glossaryCancel.hidden = !editing;
     els.glossarySave.hidden = !editing;
+    els.glossaryDraftNote.hidden = !(editing && draft);
     if (editing) {
-      els.glossaryEditor.value = glossaryText;
+      els.glossaryEditor.value = draft ?? glossaryText;
       els.glossaryEditor.focus();
+    }
+  }
+
+  // Ask the AI to fold a plain-English note into the glossary; the result opens in the editor to review.
+  async function draftGlossary() {
+    const note = els.glossaryNote.value.trim();
+    if (!note) { els.glossaryNote.focus(); return; }
+    els.glossaryDraft.disabled = true;
+    els.glossaryError.hidden = true;
+    els.glossaryAiStatus.textContent = "Drafting… (looking up spell ids in your current report)";
+    try {
+      const report = els.report.value.trim() || storage.get(REPORT_KEY) || "";
+      const res = await api("/api/glossary/draft", { method: "POST", body: JSON.stringify({ note, report }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { showGlossaryError(data.error || "Couldn't draft that change."); return; }
+      els.glossaryNote.value = "";
+      setGlossaryEditing(true, data.text);
+    } catch {
+      showGlossaryError("Couldn't reach the server.");
+    } finally {
+      els.glossaryDraft.disabled = false;
+      els.glossaryAiStatus.textContent = "The AI rewrites the glossary for you to check before saving.";
     }
   }
 
@@ -611,6 +659,7 @@
   els.glossaryEdit.onclick = () => setGlossaryEditing(true);
   els.glossaryCancel.onclick = () => setGlossaryEditing(false);
   els.glossarySave.onclick = saveGlossary;
+  els.glossaryDraft.onclick = draftGlossary;
 
   init();
 })();

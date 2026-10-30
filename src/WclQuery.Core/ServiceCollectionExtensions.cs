@@ -24,6 +24,7 @@ public static class ServiceCollectionExtensions
         services.AddMemoryCache();
         services.AddHttpClient<WarcraftLogsClient>();
         services.AddSingleton<GlossaryStore>();
+        services.AddSingleton<GlossaryAssistant>();
         services.AddSingleton<ConversationStore>();
         services.AddSingleton<QueryEngine>();
 
