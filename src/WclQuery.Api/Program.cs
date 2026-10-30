@@ -1,6 +1,7 @@
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.DataProtection;
 using WclQuery.Api.Auth;
+using WclQuery.Core;
 using WclQuery.Core.Engine;
 using WclQuery.Core.Knowledge;
 using WclQuery.Core.WarcraftLogs;
@@ -8,17 +9,11 @@ using WclQuery.Core.WarcraftLogs;
 var builder = WebApplication.CreateBuilder(args);
 var config = builder.Configuration;
 
-builder.Services.Configure<WarcraftLogsOptions>(config.GetSection(WarcraftLogsOptions.SectionName));
-builder.Services.Configure<QueryEngineOptions>(config.GetSection(QueryEngineOptions.SectionName));
-builder.Services.Configure<DiscordAuthOptions>(config.GetSection(DiscordAuthOptions.SectionName));
+// Warcraft Logs client, glossary, conversations, query engine and the model provider (Llm:Provider).
+builder.Services.AddQueryEngine(config);
 
-builder.Services.AddMemoryCache();
-builder.Services.AddHttpClient<WarcraftLogsClient>();
+builder.Services.Configure<DiscordAuthOptions>(config.GetSection(DiscordAuthOptions.SectionName));
 builder.Services.AddHttpClient("discord");
-builder.Services.Configure<GlossaryOptions>(config.GetSection(GlossaryOptions.SectionName));
-builder.Services.AddSingleton<GlossaryStore>();
-builder.Services.AddSingleton<ConversationStore>();
-builder.Services.AddSingleton<QueryEngine>();
 builder.Services.AddSingleton<DiscordAuth>();
 
 // Session tokens are encrypted with Data Protection keys. Persist them so logins survive restarts.

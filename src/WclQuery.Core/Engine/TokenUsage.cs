@@ -1,4 +1,4 @@
-using Anthropic.Models.Messages;
+using WclQuery.Core.Engine.Llm;
 
 namespace WclQuery.Core.Engine;
 
@@ -10,31 +10,22 @@ public sealed record TokenUsage(long Input, long CacheRead, long CacheWrite, lon
 {
     public long TotalInput => Input + CacheRead + CacheWrite;
 
-    // USD per million tokens: (input, output, cache read). Cache writes (5-minute TTL) cost 1.25x input.
-    // Prices as of 2026-10; update when they change. Unknown models just don't get a cost estimate.
-    private static readonly Dictionary<string, (double Input, double Output, double CacheRead)> Prices = new()
-    {
-        ["claude-opus-5-5"] = (4.00, 20.00, 0.20),
-        ["claude-sonnet-5-5"] = (2.00, 10.00, 0.20),
-        ["claude-haiku-5-5"] = (0.10, 0.50, 0.01),
-    };
-
-    public sealed class Accumulator(string model)
+    public sealed class Accumulator(ModelPricing? pricing)
     {
         private long _input, _cacheRead, _cacheWrite, _output;
 
-        public void Add(Usage usage)
+        public void Add(LlmUsage usage)
         {
-            _input += usage.InputTokens;
-            _cacheRead += usage.CacheReadInputTokens ?? 0;
-            _cacheWrite += usage.CacheCreationInputTokens ?? 0;
-            _output += usage.OutputTokens;
+            _input += usage.Input;
+            _cacheRead += usage.CacheRead;
+            _cacheWrite += usage.CacheWrite;
+            _output += usage.Output;
         }
 
         public TokenUsage ToUsage()
         {
-            double? cost = Prices.TryGetValue(model, out var p)
-                ? (_input * p.Input + _cacheWrite * p.Input * 1.25 + _cacheRead * p.CacheRead + _output * p.Output) / 1_000_000
+            double? cost = pricing is { } p
+                ? (_input * p.Input + _cacheWrite * p.Input * p.CacheWriteMultiplier + _cacheRead * p.CacheRead + _output * p.Output) / 1_000_000
                 : null;
             return new TokenUsage(_input, _cacheRead, _cacheWrite, _output, cost is double c ? Math.Round(c, 5) : null);
         }

@@ -1,10 +1,10 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
-using Anthropic;
-using Anthropic.Models.Messages;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using WclQuery.Core.Engine.Llm;
 using WclQuery.Core.Knowledge;
 using WclQuery.Core.WarcraftLogs;
 
@@ -12,16 +12,12 @@ namespace WclQuery.Core.Engine;
 
 public sealed class QueryEngineOptions
 {
-    public const string SectionName = "Claude";
+    public const string SectionName = "Llm";
 
-    public string ApiKey { get; set; } = "";
-    public string Model { get; set; } = "claude-opus-5-5";
-    /// <summary>low | medium | high (lower is cheaper and faster).</summary>
-    public string Effort { get; set; } = "medium";
+    /// <summary>"anthropic" (Claude) or "azure-openai" (a GPT deployment on Microsoft Foundry).</summary>
+    public string Provider { get; set; } = "anthropic";
     /// <summary>Tool rounds allowed per user message.</summary>
     public int MaxToolRounds { get; set; } = 12;
-    /// <summary>Prompt-cache the conversation between rounds (the system prompt is always cached).</summary>
-    public bool CacheConversation { get; set; } = true;
 }
 
 public sealed record ToolCallTrace(string Name, string Input, string? Error, long ElapsedMs);
@@ -31,7 +27,7 @@ public sealed record PlayerInfo(string Name, string Class);
 
 /// <summary>
 /// The outcome of one user message. Status is "answer" (Answer is markdown) or "question"
-/// (Claude needs more context: Question plus optional Options to offer as buttons).
+/// (the model needs more context: Question plus optional Options to offer as buttons).
 /// </summary>
 public sealed record QueryResult(
     string ConversationId,
@@ -48,53 +44,50 @@ public sealed record QueryResult(
 public sealed class ConversationNotFoundException() : Exception("That conversation has expired. Ask your question again.");
 
 /// <summary>
-/// Turns plain-English questions about a Warcraft Logs report into answers by letting Claude call
-/// <see cref="ReportTools"/> in a manual tool-use loop. Conversations persist so Claude can ask the
-/// user a clarifying question and the user can follow up.
+/// Turns plain-English questions about a Warcraft Logs report into answers by letting a model call
+/// <see cref="ReportTools"/> in a tool-use loop. The model comes from an <see cref="ILlmProvider"/>
+/// (Claude or Azure OpenAI). Conversations persist so the model can ask the user a clarifying
+/// question and the user can follow up.
 /// </summary>
 public sealed partial class QueryEngine(
     WarcraftLogsClient wcl,
     ConversationStore conversations,
     GlossaryStore glossary,
+    ILlmProvider llm,
     IOptions<QueryEngineOptions> options,
     ILogger<QueryEngine> logger)
 {
     private readonly QueryEngineOptions _options = options.Value;
-    // Falls back to the ANTHROPIC_API_KEY environment variable when Claude:ApiKey isn't set.
-    private readonly AnthropicClient _claude = string.IsNullOrEmpty(options.Value.ApiKey)
-        ? new()
-        : new() { ApiKey = options.Value.ApiKey };
 
     private const string AskUserTool = "ask_user";
 
-    private static readonly IReadOnlyList<ToolUnion> AllTools =
+    private static readonly IReadOnlyList<ToolSpec> AllTools =
     [
         .. ReportTools.Definitions,
-        new Tool
-        {
-            Name = AskUserTool,
-            Description = """
-                Ask the user a short clarifying question and wait for their reply. Use it when the answer depends on
-                something only they know, above all which ability an informal mechanic name refers to when it isn't in
-                the guild glossary and no ability name literally matches it. Don't ask about things you can default
-                (which pull, which phase): default and say what you assumed. Look at the data first so you can offer
-                concrete options. At most one question per user message.
-                """,
-            InputSchema = new()
+        new ToolSpec(
+            AskUserTool,
+            """
+            Ask the user a short clarifying question and wait for their reply. Use it when the answer depends on
+            something only they know, above all which ability an informal mechanic name refers to when it isn't in
+            the guild glossary and no ability name literally matches it. Don't ask about things you can default
+            (which pull, which phase): default and say what you assumed. Look at the data first so you can offer
+            concrete options. At most one question per user message.
+            """,
+            new JsonObject
             {
-                Properties = new Dictionary<string, JsonElement>
+                ["type"] = "object",
+                ["properties"] = new JsonObject
                 {
-                    ["question"] = JsonSerializer.SerializeToElement(new { type = "string", description = "The question, one or two sentences." }),
-                    ["options"] = JsonSerializer.SerializeToElement(new
+                    ["question"] = new JsonObject { ["type"] = "string", ["description"] = "The question, one or two sentences." },
+                    ["options"] = new JsonObject
                     {
-                        type = "array",
-                        items = new { type = "string" },
-                        description = "2-5 short answer choices shown as buttons, e.g. ability names. Don't add an 'other' / 'something else' choice: the user always has a text box to type their own reply.",
-                    }),
+                        ["type"] = "array",
+                        ["items"] = new JsonObject { ["type"] = "string" },
+                        ["description"] = "2-5 short answer choices shown as buttons, e.g. ability names. Don't add an 'other' / 'something else' choice: the user always has a text box to type their own reply.",
+                    },
                 },
-                Required = ["question"],
-            },
-        },
+                ["required"] = new JsonArray("question"),
+            }),
     ];
 
     private const string SystemPrompt = """
@@ -115,10 +108,10 @@ public sealed partial class QueryEngine(
         - Prefer get_table for damage/healing totals, count_events for "how many times / who got hit by X
           the most", and get_events for "who did X / when did X happen".
         - Players describe mechanics informally ("eggs", "pools", "beams", "soak"). First check the guild
-          glossary (in the next system block): if the term is there, use that ability and follow its notes. Otherwise, find
-          candidates: run count_events with group_by ability on DamageTaken (event_type damage) and on Debuffs
-          (event_type applydebuff) for the relevant fight/phase; find_abilities helps when you can guess part
-          of the name. Then:
+          glossary (at the end of these instructions): if the term is there, use that ability and follow its notes.
+          Otherwise, find candidates: run count_events with group_by ability on DamageTaken (event_type damage) and
+          on Debuffs (event_type applydebuff) for the relevant fight/phase; find_abilities helps when you can guess
+          part of the name. Then:
           - If exactly one ability's name literally contains the user's term (e.g. "waves" → Caustic Waves),
             use it.
           - Otherwise you MUST call ask_user with the 2-5 most likely candidates as options before
@@ -161,16 +154,18 @@ public sealed partial class QueryEngine(
         If the data can't answer the question, say so plainly and suggest how to rephrase.
         """;
 
+    public string ProviderName => llm.Name;
+
     /// <summary>Starts a new conversation with the user's first question.</summary>
     public Task<QueryResult> AskAsync(string userId, string reportCode, string question, int? fightHint,
         QuerySettings settings, CancellationToken ct)
     {
-        var conversation = conversations.Create(userId, reportCode);
+        var conversation = conversations.Create(userId, reportCode, llm.CreateSession());
         var text = fightHint is int f ? $"(The user is looking at fight {f} in the report.)\n\n{question}" : question;
         return RunTurnAsync(conversation, text, settings, ct);
     }
 
-    /// <summary>Answers Claude's clarifying question, or asks a follow-up in an existing conversation.</summary>
+    /// <summary>Answers the model's clarifying question, or asks a follow-up in an existing conversation.</summary>
     public Task<QueryResult> ReplyAsync(string userId, string conversationId, string message,
         QuerySettings settings, CancellationToken ct)
     {
@@ -183,8 +178,8 @@ public sealed partial class QueryEngine(
         await conv.Lock.WaitAsync(ct);
         try
         {
-            // Tell Claude about filters on the first message and whenever they change.
-            var firstMessage = conv.Messages.Count == 0;
+            // Tell the model about filters on the first message and whenever they change.
+            var firstMessage = conv.Session.IsEmpty;
             if ((firstMessage && settings.Describe() is not null) || (!firstMessage && settings != conv.Settings))
             {
                 var note = settings.Describe() is string d ? $"Filters on: {d}." : "Filters changed: none are on now.";
@@ -192,18 +187,17 @@ public sealed partial class QueryEngine(
             }
             conv.Settings = settings;
 
-            if (conv.PendingQuestionToolUseId is string askId)
+            if (conv.PendingQuestionToolCallId is string askId)
             {
                 // The user is answering ask_user: hand their reply back as that tool's result.
-                List<ContentBlockParam> results = [.. conv.PendingToolResults];
-                results.Add(new ToolResultBlockParam { ToolUseID = askId, Content = $"The user replied: {userText}" });
-                conv.Messages.Add(new UserMessageParam { Content = results });
-                conv.PendingQuestionToolUseId = null;
+                List<LlmToolResult> results = [.. conv.PendingToolResults, new(askId, $"The user replied: {userText}")];
+                conv.Session.AddToolResults(results);
+                conv.PendingQuestionToolCallId = null;
                 conv.PendingToolResults.Clear();
             }
             else
             {
-                conv.Messages.Add(new UserMessageParam { Content = userText });
+                conv.Session.AddUserText(userText);
             }
 
             return await RunLoopAsync(conv, ct);
@@ -220,112 +214,70 @@ public sealed partial class QueryEngine(
         var traces = new List<ToolCallTrace>();
         var charts = new List<ChartData>();
         var links = new List<WclLink>();
-        var usage = new TokenUsage.Accumulator(_options.Model);
+        var usage = new TokenUsage.Accumulator(llm.Pricing);
 
+        // The glossary is officer-maintained (editable from the site), so read it fresh each turn.
+        // It goes last so the fixed instructions before it stay cacheable.
         var glossaryText = glossary.Get().Text.Trim();
-        var glossaryBlock = glossaryText.Length > 0
-            ? "Guild glossary (written by the guild's officers; trust it over your own guesses):\n\n" + glossaryText
-            : "Guild glossary: (empty)";
+        string[] system =
+        [
+            SystemPrompt,
+            glossaryText.Length > 0
+                ? "Guild glossary (written by the guild's officers; trust it over your own guesses):\n\n" + glossaryText
+                : "Guild glossary: (empty)",
+        ];
 
         async Task<QueryResult> Result(string status, string? answer, string? question = null, IReadOnlyList<string>? options = null) =>
             new(conv.Id, status, answer, question, options ?? [], charts,
                 [.. links.DistinctBy(l => l.Url).Take(4)], await PlayersAsync(conv.ReportCode, ct), traces, usage.ToUsage());
 
-        // The last round withholds tools so Claude answers with what it has instead of giving up.
+        // The last round withholds tools so the model answers with what it has instead of giving up.
         for (var round = 0; round <= _options.MaxToolRounds; round++)
         {
             var finalRound = round == _options.MaxToolRounds;
-            var request = new MessageCreateParams
-            {
-                Model = _options.Model,
-                MaxTokens = 16000,
-                System = new List<TextBlockParam>
-                {
-                    new() { Text = SystemPrompt },
-                    // The glossary is officer-maintained (editable from the site), so read it fresh each turn.
-                    new() { Text = glossaryBlock, CacheControl = new CacheControlEphemeral() },
-                },
-                OutputConfig = new OutputConfig { Effort = ParseEffort(_options.Effort) },
-                Tools = [.. AllTools],
-                ToolChoice = finalRound ? new ToolChoiceNone() : new ToolChoiceAuto(),
-                Messages = conv.Messages,
-            };
-            // Cache the conversation so far: each round resends the whole history, and cached tokens are
-            // far cheaper than normal input. Only set when on: an explicit null would be sent to the API.
-            if (_options.CacheConversation)
-                request = request with { CacheControl = new CacheControlEphemeral() };
-            var response = await _claude.Messages.Create(request, ct);
+            var turn = await conv.Session.CompleteAsync(system, AllTools, allowTools: !finalRound, ct);
+            usage.Add(turn.Usage);
 
-            usage.Add(response.Usage);
-
-            if (response.StopReason == "refusal")
+            if (turn.Stop == LlmStop.Refusal)
                 return await Result("answer", "Sorry, I can't answer that one.");
 
-            List<ContentBlockParam> assistantContent = [];
-            List<ContentBlockParam> toolResults = [];
-            var answerParts = new List<string>();
+            var toolResults = new List<LlmToolResult>();
             (string Id, string Question, List<string> Options)? ask = null;
-
-            foreach (var block in response.Content)
+            foreach (var call in turn.ToolCalls)
             {
-                if (block.TryPickText(out TextBlock? text))
+                if (call.Name == AskUserTool && ask is null)
                 {
-                    assistantContent.Add(new TextBlockParam { Text = text.Text });
-                    answerParts.Add(text.Text);
+                    ask = ParseAsk(call);
+                    traces.Add(new(call.Name, JsonSerializer.Serialize(call.Input), null, 0));
                 }
-                else if (block.TryPickThinking(out ThinkingBlock? thinking))
+                else if (call.Name == AskUserTool)
                 {
-                    assistantContent.Add(new ThinkingBlockParam { Thinking = thinking.Thinking, Signature = thinking.Signature });
+                    toolResults.Add(new(call.Id, "Error: only one question at a time.", IsError: true));
                 }
-                else if (block.TryPickRedactedThinking(out RedactedThinkingBlock? redacted))
+                else
                 {
-                    assistantContent.Add(new RedactedThinkingBlockParam { Data = redacted.Data });
-                }
-                else if (block.TryPickToolUse(out ToolUseBlock? toolUse))
-                {
-                    assistantContent.Add(new ToolUseBlockParam { ID = toolUse.ID, Name = toolUse.Name, Input = toolUse.Input });
-                    if (toolUse.Name == AskUserTool && ask is null)
-                    {
-                        ask = ParseAsk(toolUse);
-                        traces.Add(new(toolUse.Name, JsonSerializer.Serialize(toolUse.Input), null, 0));
-                    }
-                    else if (toolUse.Name == AskUserTool)
-                    {
-                        toolResults.Add(new ToolResultBlockParam { ToolUseID = toolUse.ID, Content = "Error: only one question at a time.", IsError = true });
-                    }
-                    else
-                    {
-                        toolResults.Add(await RunToolAsync(tools, toolUse, traces, charts, links, ct));
-                    }
+                    toolResults.Add(await RunToolAsync(tools, call, traces, charts, links, ct));
                 }
             }
-
-            conv.Messages.Add(new AssistantMessageParam { Content = assistantContent });
 
             if (ask is { } a)
             {
                 // Pause: keep the other tool results until the user replies.
-                conv.PendingQuestionToolUseId = a.Id;
+                conv.PendingQuestionToolCallId = a.Id;
                 conv.PendingToolResults.AddRange(toolResults);
-                var preamble = string.Join("\n\n", answerParts).Trim();
-                return await Result("question", preamble.Length > 0 ? preamble : null, a.Question, a.Options);
+                return await Result("question", turn.Text.Length > 0 ? turn.Text : null, a.Question, a.Options);
             }
 
-            if (toolResults.Count == 0)
+            if (turn.ToolCalls.Count == 0)
             {
-                var answer = string.Join("\n\n", answerParts).Trim();
-                if (response.StopReason == "max_tokens") answer += "\n\n_(answer was cut off)_";
+                var answer = turn.Text;
+                if (turn.Stop == LlmStop.MaxTokens) answer += "\n\n_(answer was cut off)_";
                 return await Result("answer", answer.Length > 0 ? answer : "No answer was produced.");
             }
 
-            if (round + 1 == _options.MaxToolRounds)
-            {
-                toolResults.Add(new TextBlockParam
-                {
-                    Text = "You have used all your lookups. Answer now with what you've found, and say plainly what is uncertain or unchecked.",
-                });
-            }
-            conv.Messages.Add(new UserMessageParam { Content = toolResults });
+            conv.Session.AddToolResults(toolResults, round + 1 == _options.MaxToolRounds
+                ? "You have used all your lookups. Answer now with what you've found, and say plainly what is uncertain or unchecked."
+                : null);
         }
 
         return await Result("answer", "No answer was produced.");
@@ -347,50 +299,43 @@ public sealed partial class QueryEngine(
         }
     }
 
-    private static (string Id, string Question, List<string> Options) ParseAsk(ToolUseBlock toolUse)
+    private static (string Id, string Question, List<string> Options) ParseAsk(LlmToolCall call)
     {
-        var question = toolUse.Input.TryGetValue("question", out var q) && q.ValueKind == JsonValueKind.String
+        var question = call.Input.TryGetValue("question", out var q) && q.ValueKind == JsonValueKind.String
             ? q.GetString()!
             : "Could you give me a bit more detail?";
-        var options = toolUse.Input.TryGetValue("options", out var o) && o.ValueKind == JsonValueKind.Array
+        var options = call.Input.TryGetValue("options", out var o) && o.ValueKind == JsonValueKind.Array
             ? o.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).Take(5).ToList()
             : [];
-        return (toolUse.ID, question, options);
+        return (call.Id, question, options);
     }
 
-    private async Task<ToolResultBlockParam> RunToolAsync(
-        ReportTools tools, ToolUseBlock toolUse, List<ToolCallTrace> traces,
+    private async Task<LlmToolResult> RunToolAsync(
+        ReportTools tools, LlmToolCall call, List<ToolCallTrace> traces,
         List<ChartData> charts, List<WclLink> links, CancellationToken ct)
     {
-        var inputJson = JsonSerializer.Serialize(toolUse.Input);
+        var inputJson = JsonSerializer.Serialize(call.Input);
         var sw = Stopwatch.StartNew();
         try
         {
-            var output = await tools.ExecuteAsync(toolUse.Name, toolUse.Input, ct);
-            traces.Add(new(toolUse.Name, inputJson, null, sw.ElapsedMilliseconds));
+            var output = await tools.ExecuteAsync(call.Name, call.Input, ct);
+            traces.Add(new(call.Name, inputJson, null, sw.ElapsedMilliseconds));
             if (output.Chart is not null) charts.Add(output.Chart);
             if (output.Link is not null) links.Add(output.Link);
-            return new ToolResultBlockParam { ToolUseID = toolUse.ID, Content = output.Text };
+            return new(call.Id, output.Text);
         }
         catch (Exception ex) when (ex is ToolInputException or WarcraftLogsException)
         {
-            traces.Add(new(toolUse.Name, inputJson, ex.Message, sw.ElapsedMilliseconds));
-            return new ToolResultBlockParam { ToolUseID = toolUse.ID, Content = $"Error: {ex.Message}", IsError = true };
+            traces.Add(new(call.Name, inputJson, ex.Message, sw.ElapsedMilliseconds));
+            return new(call.Id, $"Error: {ex.Message}", IsError: true);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogError(ex, "Tool {Tool} failed with input {Input}", toolUse.Name, inputJson);
-            traces.Add(new(toolUse.Name, inputJson, "internal error", sw.ElapsedMilliseconds));
-            return new ToolResultBlockParam { ToolUseID = toolUse.ID, Content = "Error: the tool failed unexpectedly.", IsError = true };
+            logger.LogError(ex, "Tool {Tool} failed with input {Input}", call.Name, inputJson);
+            traces.Add(new(call.Name, inputJson, "internal error", sw.ElapsedMilliseconds));
+            return new(call.Id, "Error: the tool failed unexpectedly.", IsError: true);
         }
     }
-
-    private static Effort ParseEffort(string value) => value.ToLowerInvariant() switch
-    {
-        "low" => Effort.Low,
-        "high" => Effort.High,
-        _ => Effort.Medium,
-    };
 
     /// <summary>Accepts a report code or any warcraftlogs.com report URL; returns the code and optional fight id.</summary>
     public static (string Code, int? Fight)? ParseReport(string input)

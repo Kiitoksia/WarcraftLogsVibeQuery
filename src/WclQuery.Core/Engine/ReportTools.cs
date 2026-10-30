@@ -2,15 +2,15 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Anthropic.Models.Messages;
+using WclQuery.Core.Engine.Llm;
 using WclQuery.Core.WarcraftLogs;
 
 namespace WclQuery.Core.Engine;
 
 /// <summary>
-/// The tools Claude can call. Each one wraps a Warcraft Logs GraphQL query and returns a
+/// The tools the model can call. Each one wraps a Warcraft Logs GraphQL query and returns a
 /// compact, token-friendly text result with actor/ability IDs resolved to names.
-/// Times exposed to Claude are seconds relative to the start of a fight.
+/// Times exposed to the model are seconds relative to the start of a fight.
 /// </summary>
 public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, QuerySettings settings)
 {
@@ -28,7 +28,7 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
         ["DamageDone", "DamageTaken", "Healing", "Casts", "Buffs", "Debuffs", "Deaths", "Interrupts", "Dispels"];
 
     // Must stay below the arrays above: static initializers run in declaration order.
-    public static IReadOnlyList<ToolUnion> Definitions { get; } = BuildDefinitions();
+    public static IReadOnlyList<ToolSpec> Definitions { get; } = [.. BuildDefinitions().Select(ToSpec)];
 
     public async Task<ToolOutput> ExecuteAsync(string name, IReadOnlyDictionary<string, JsonElement> input, CancellationToken ct)
     {
@@ -691,7 +691,34 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
 
     // ---- tool definitions ------------------------------------------------------
 
-    private static List<ToolUnion> BuildDefinitions()
+    // Lightweight builders for the definitions below, converted to provider-neutral ToolSpecs.
+    private sealed class Tool
+    {
+        public required string Name { get; init; }
+        public required string Description { get; init; }
+        public Schema InputSchema { get; init; } = new();
+    }
+
+    private sealed class Schema
+    {
+        public Dictionary<string, JsonElement> Properties { get; init; } = [];
+        public List<string> Required { get; init; } = [];
+    }
+
+    private static ToolSpec ToSpec(Tool tool)
+    {
+        var properties = new JsonObject();
+        foreach (var (name, schema) in tool.InputSchema.Properties)
+            properties[name] = JsonNode.Parse(schema.GetRawText());
+        return new ToolSpec(tool.Name, tool.Description, new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = properties,
+            ["required"] = new JsonArray([.. tool.InputSchema.Required.Select(r => (JsonNode)r)]),
+        });
+    }
+
+    private static List<Tool> BuildDefinitions()
     {
         static JsonElement Prop(object schema) => JsonSerializer.SerializeToElement(schema);
 

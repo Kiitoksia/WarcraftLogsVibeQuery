@@ -9,19 +9,13 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using WclQuery.Core;
 using WclQuery.Core.Engine;
 using WclQuery.Core.WarcraftLogs;
 
 var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { EnvironmentName = "Development" });
 builder.Logging.SetMinimumLevel(LogLevel.Warning);
-builder.Services.Configure<WarcraftLogsOptions>(builder.Configuration.GetSection(WarcraftLogsOptions.SectionName));
-builder.Services.Configure<QueryEngineOptions>(builder.Configuration.GetSection(QueryEngineOptions.SectionName));
-builder.Services.AddMemoryCache();
-builder.Services.AddHttpClient<WarcraftLogsClient>();
-builder.Services.Configure<WclQuery.Core.Knowledge.GlossaryOptions>(builder.Configuration.GetSection(WclQuery.Core.Knowledge.GlossaryOptions.SectionName));
-builder.Services.AddSingleton<WclQuery.Core.Knowledge.GlossaryStore>();
-builder.Services.AddSingleton<ConversationStore>();
-builder.Services.AddSingleton<QueryEngine>();
+builder.Services.AddQueryEngine(builder.Configuration);
 using var host = builder.Build();
 
 var wcl = host.Services.GetRequiredService<WarcraftLogsClient>();
