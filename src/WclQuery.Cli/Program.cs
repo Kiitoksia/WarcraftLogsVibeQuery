@@ -69,6 +69,16 @@ switch (command)
         break;
     }
 
+    case "tool":
+    {
+        // tool <report> <tool name> '<json input>'
+        var (code, _) = QueryEngine.ParseReport(args[1]) ?? throw new ArgumentException("Bad report code/URL.");
+        var input = JsonDocument.Parse(args.ElementAtOrDefault(3) ?? "{}").RootElement
+            .EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone());
+        Console.WriteLine(await new ReportTools(wcl, code).ExecuteAsync(args[2], input, default));
+        break;
+    }
+
     case "ask":
     {
         var (code, fight) = QueryEngine.ParseReport(args[1]) ?? throw new ArgumentException("Bad report code/URL.");

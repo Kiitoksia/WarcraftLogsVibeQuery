@@ -32,10 +32,12 @@ public sealed class WarcraftLogsClient(
               startTime
               endTime
               zone { id name }
+              phases { encounterID phases { id name isIntermission } }
               fights {
                 id name startTime endTime encounterID kill difficulty
                 bossPercentage fightPercentage size friendlyPlayers
                 enemyNPCs { id gameID instanceCount }
+                phaseTransitions { id startTime }
               }
               masterData(translate: true) {
                 actors { id name type subType server petOwner gameID }
@@ -135,7 +137,7 @@ public sealed class WarcraftLogsClient(
             ["endTime"] = q.EndTime,
             ["dataType"] = q.DataType,
         };
-        if (q.FightId is int f) vars["fightIDs"] = new JsonArray(f);
+        if (q.FightIds is { Count: > 0 } ids) vars["fightIDs"] = new JsonArray([.. ids.Select(i => (JsonNode)i)]);
         if (q.HostilityType is not null) vars["hostilityType"] = q.HostilityType;
         if (q.AbilityId is long a) vars["abilityID"] = a;
         if (q.SourceId is int s) vars["sourceID"] = s;

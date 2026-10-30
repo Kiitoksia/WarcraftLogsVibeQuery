@@ -13,6 +13,7 @@ public sealed class Report
     public long EndTime { get; set; }
     public Zone? Zone { get; set; }
     public List<Fight> Fights { get; set; } = [];
+    public List<EncounterPhases> Phases { get; set; } = [];
     public MasterData MasterData { get; set; } = new();
 
     [JsonIgnore]
@@ -40,6 +41,30 @@ public sealed class Report
 
     public string AbilityName(long? id) =>
         id is null ? "" : AbilitiesById.TryGetValue(id.Value, out var a) ? a.Name : $"#{id}";
+
+    public IReadOnlyList<PhaseInfo> PhasesFor(int encounterId) =>
+        Phases.FirstOrDefault(p => p.EncounterId == encounterId)?.Phases ?? [];
+}
+
+public sealed class EncounterPhases
+{
+    public int EncounterId { get; set; }
+    public List<PhaseInfo> Phases { get; set; } = [];
+}
+
+public sealed class PhaseInfo
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public bool IsIntermission { get; set; }
+}
+
+public sealed class PhaseTransition
+{
+    /// <summary>Phase id (matches <see cref="PhaseInfo.Id"/>).</summary>
+    public int Id { get; set; }
+    /// <summary>Report-relative ms when the phase began.</summary>
+    public long StartTime { get; set; }
 }
 
 public sealed class Zone
@@ -62,6 +87,7 @@ public sealed class Fight
     public int? Size { get; set; }
     public List<int> FriendlyPlayers { get; set; } = [];
     public List<FightNpc> EnemyNpcs { get; set; } = [];
+    public List<PhaseTransition> PhaseTransitions { get; set; } = [];
 
     public bool IsBoss => EncounterId != 0;
     public long DurationMs => EndTime - StartTime;
@@ -111,7 +137,7 @@ public sealed record ReportQuery
 {
     public required long StartTime { get; init; }
     public required long EndTime { get; init; }
-    public int? FightId { get; init; }
+    public IReadOnlyList<int>? FightIds { get; init; }
     public required string DataType { get; init; }
     public string? HostilityType { get; init; }
     public long? AbilityId { get; init; }

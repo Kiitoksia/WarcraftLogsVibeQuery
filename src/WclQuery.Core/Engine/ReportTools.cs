@@ -36,6 +36,7 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode)
             "find_abilities" => FindAbilities(report, args),
             "get_table" => await TableAsync(report, args, ct),
             "get_events" => await EventsAsync(report, args, ct),
+            "count_events" => await CountEventsAsync(report, args, ct),
             "get_pull_timeline" => await PullTimelineAsync(report, args, ct),
             _ => throw new ToolInputException($"Unknown tool '{name}'."),
         };
@@ -51,13 +52,24 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode)
         var sb = new StringBuilder();
         sb.AppendLine($"Report: {report.Title} ({report.Code}), zone: {report.Zone?.Name ?? "unknown"}");
         sb.AppendLine();
-        sb.AppendLine("Fights (id | name | result | duration | report-relative start):");
+        sb.AppendLine("Fights (id | name | result | duration | report-relative start | phase start times, fight-relative):");
         foreach (var f in report.Fights)
         {
             var result = !f.IsBoss ? "trash"
                 : f.Kill == true ? "KILL"
                 : $"wipe at {f.BossPercentage?.ToString("0.#", CultureInfo.InvariantCulture) ?? "?"}%";
-            sb.AppendLine($"  {f.Id} | {f.Name} | {result} | {FormatTime(f.DurationMs)} | {FormatTime(f.StartTime)}");
+            var phases = f.PhaseTransitions.Count == 0 ? ""
+                : " | " + string.Join(", ", f.PhaseTransitions.Select(p => $"P{p.Id} {FormatTime(p.StartTime - f.StartTime)}"));
+            sb.AppendLine($"  {f.Id} | {f.Name} | {result} | {FormatTime(f.DurationMs)} | {FormatTime(f.StartTime)}{phases}");
+        }
+
+        foreach (var enc in report.Phases)
+        {
+            var bossName = report.Fights.FirstOrDefault(f => f.EncounterId == enc.EncounterId)?.Name ?? $"encounter {enc.EncounterId}";
+            sb.AppendLine();
+            sb.AppendLine($"Phases of {bossName} (use the phase parameter to filter to one):");
+            foreach (var p in enc.Phases)
+                sb.AppendLine($"  P{p.Id} | {p.Name}{(p.IsIntermission ? " (intermission)" : "")}");
         }
 
         sb.AppendLine();
@@ -114,13 +126,71 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode)
         var limit = Math.Clamp(args.OptionalInt("limit") ?? 200, 1, 500);
         var page = await wcl.GetEventsAsync(reportCode, q, limit, ct);
 
-        var origin = q.FightId is int fid ? report.GetFight(fid)!.StartTime : 0;
+        var origin = SingleFightOrigin(report, q);
         var sb = new StringBuilder();
         sb.AppendLine(DescribeWindow(report, q));
-        sb.AppendLine($"{page.Data.Count} events (time is relative to {(q.FightId is null ? "report" : "fight")} start):");
+        sb.AppendLine($"{page.Data.Count} events (times are relative to the start of each event's fight):");
         foreach (var e in page.Data) sb.AppendLine(FormatEvent(report, e, origin));
-        if (page.NextPageTimestamp is double next && page.Data.Count >= limit)
-            sb.AppendLine($"…more events exist after {FormatTime((long)next - origin)}; narrow the window or raise limit.");
+        if (page.NextPageTimestamp is not null && page.Data.Count >= limit)
+            sb.AppendLine("…more events exist; narrow the window, add filters, or use count_events to aggregate.");
+        return sb.ToString();
+    }
+
+    // ---- count_events --------------------------------------------------------
+
+    private const int MaxCountedEvents = 50_000;
+
+    private async Task<string> CountEventsAsync(Report report, ToolArgs args, CancellationToken ct)
+    {
+        var q = BuildQuery(report, args, EventDataTypes);
+        var eventType = args.OptionalString("event_type");
+        if (eventType is not null)
+        {
+            if (!eventType.All(char.IsAsciiLetterLower))
+                throw new ToolInputException("event_type must be a lowercase event type such as damage, applydebuff, cast, death.");
+            q = q with { FilterExpression = CombineFilters(q.FilterExpression, $"type = \"{eventType}\"") };
+        }
+        var groupBy = args.OptionalString("group_by") ?? "target";
+        var top = Math.Clamp(args.OptionalInt("top") ?? 25, 1, 100);
+
+        var page = await wcl.GetEventsAsync(reportCode, q, MaxCountedEvents, ct);
+
+        string Key(JsonElement e)
+        {
+            var src = report.ActorName(GetInt(e, "sourceID"));
+            var tgt = report.ActorName(GetInt(e, "targetID"));
+            var ab = GetLong(e, "abilityGameID") is long id and > 0 ? $"{report.AbilityName(id)} ({id})" : "(no ability)";
+            return groupBy switch
+            {
+                "source" => src,
+                "ability" => ab,
+                "source_ability" => $"{src} | {ab}",
+                "target_ability" => $"{tgt} | {ab}",
+                "fight" => $"fight {GetInt(e, "fight")}",
+                "type" => GetString(e, "type") ?? "?",
+                _ => tgt,
+            };
+        }
+
+        var rows = page.Data
+            .Where(e => eventType is null || GetString(e, "type") == eventType)
+            .GroupBy(Key)
+            .Select(g => (
+                Key: g.Key,
+                Count: g.Count(),
+                Amount: g.Sum(e => GetDouble(e, "amount") ?? 0),
+                Fights: g.Select(e => GetInt(e, "fight")).Distinct().Count()))
+            .OrderByDescending(r => r.Count)
+            .ToList();
+
+        var sb = new StringBuilder();
+        sb.AppendLine(DescribeWindow(report, q));
+        sb.AppendLine($"{page.Data.Count} events scanned, {rows.Count} groups (by {groupBy}). count | {groupBy} | total amount | fights it appears in:");
+        foreach (var r in rows.Take(top))
+            sb.AppendLine($"  {r.Count} | {r.Key} | {(r.Amount > 0 ? r.Amount.ToString("N0", CultureInfo.InvariantCulture) : "-")} | {r.Fights}");
+        if (rows.Count > top) sb.AppendLine($"  …{rows.Count - top} more groups");
+        if (page.Data.Count >= MaxCountedEvents)
+            sb.AppendLine($"WARNING: stopped after {MaxCountedEvents} events, so counts are partial. Add filters (ability_id, event_type, phase) to narrow it.");
         return sb.ToString();
     }
 
@@ -171,50 +241,75 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode)
         if (!allowedTypes.Contains(dataType))
             throw new ToolInputException($"data_type must be one of: {string.Join(", ", allowedTypes)}");
 
-        long origin, windowEnd;
-        var fightId = args.OptionalInt("fight_id");
-        if (fightId is int id)
+        // Which fights: one fight_id, a fight_ids list, every boss pull, or (none) the whole report.
+        List<Fight> fights;
+        if (args.OptionalBool("all_boss_pulls") == true)
+            fights = [.. report.Fights.Where(f => f.IsBoss)];
+        else if (args.OptionalIntArray("fight_ids") is { Count: > 0 } ids)
+            fights = [.. ids.Distinct().Select(i => RequireFight(report, i))];
+        else if (args.OptionalInt("fight_id") is int id)
+            fights = [RequireFight(report, id)];
+        else
+            fights = [];
+
+        long start, end;
+        if (fights.Count == 1)
         {
-            var fight = RequireFight(report, id);
-            origin = fight.StartTime;
-            windowEnd = fight.EndTime;
+            var fight = fights[0];
+            start = args.OptionalDouble("start_sec") is double s ? fight.StartTime + (long)(s * 1000) : fight.StartTime;
+            end = args.OptionalDouble("end_sec") is double e ? Math.Min(fight.EndTime, fight.StartTime + (long)(e * 1000)) : fight.EndTime;
+            if (end <= start) throw new ToolInputException("end_sec must be after start_sec and inside the fight.");
         }
         else
         {
-            origin = 0;
-            windowEnd = report.EndTime - report.StartTime;
+            if (args.OptionalDouble("start_sec") is not null || args.OptionalDouble("end_sec") is not null)
+                throw new ToolInputException("start_sec/end_sec only work with a single fight_id. For several fights, use the phase parameter or query each fight separately.");
+            start = fights.Count > 0 ? fights.Min(f => f.StartTime) : 0;
+            end = fights.Count > 0 ? fights.Max(f => f.EndTime) : report.EndTime - report.StartTime;
         }
-
-        var start = args.OptionalDouble("start_sec") is double s ? origin + (long)(s * 1000) : origin;
-        var end = args.OptionalDouble("end_sec") is double e ? Math.Min(windowEnd, origin + (long)(e * 1000)) : windowEnd;
-        if (end <= start) throw new ToolInputException("end_sec must be after start_sec and inside the fight.");
 
         var hostility = args.OptionalString("hostility");
         if (hostility is not null and not ("Friendlies" or "Enemies"))
             throw new ToolInputException("hostility must be Friendlies or Enemies.");
 
+        var filter = args.OptionalString("filter_expression");
+        if (args.OptionalInt("phase") is int phase)
+            filter = CombineFilters(filter, $"encounterPhase = {phase}");
+
         return new ReportQuery
         {
             StartTime = start,
             EndTime = end,
-            FightId = fightId,
+            FightIds = fights.Count > 0 ? [.. fights.Select(f => f.Id)] : null,
             DataType = dataType,
             HostilityType = hostility,
             AbilityId = args.OptionalLong("ability_id"),
             SourceId = args.OptionalInt("source_id"),
             TargetId = args.OptionalInt("target_id"),
-            FilterExpression = args.OptionalString("filter_expression"),
+            FilterExpression = filter,
         };
     }
+
+    private static string? CombineFilters(string? a, string b) =>
+        string.IsNullOrWhiteSpace(a) ? b : $"({a}) AND {b}";
 
     private static Fight RequireFight(Report report, int id) =>
         report.GetFight(id) ?? throw new ToolInputException($"Fight {id} does not exist. Call get_report_overview for the fight list.");
 
+    /// <summary>Start of the fight when the query covers exactly one fight; otherwise null.</summary>
+    private static long? SingleFightOrigin(Report report, ReportQuery q) =>
+        q.FightIds is [var only] ? report.GetFight(only)!.StartTime : null;
+
     private static string DescribeWindow(Report report, ReportQuery q)
     {
-        var origin = q.FightId is int fid ? report.GetFight(fid)!.StartTime : 0;
-        var scope = q.FightId is int f ? $"fight {f}" : "whole report";
-        return $"[{q.DataType}, {scope}, {FormatTime(q.StartTime - origin)}–{FormatTime(q.EndTime - origin)}]";
+        var scope = q.FightIds switch
+        {
+            null => "whole report",
+            [var f] => $"fight {f}, {FormatTime(q.StartTime - report.GetFight(f)!.StartTime)}–{FormatTime(q.EndTime - report.GetFight(f)!.StartTime)}",
+            var ids => $"{ids.Count} fights ({string.Join(", ", ids)})",
+        };
+        var filter = string.IsNullOrEmpty(q.FilterExpression) ? "" : $", filter: {q.FilterExpression}";
+        return $"[{q.DataType}, {scope}{filter}]";
     }
 
     private static readonly HashSet<string> SkippedEventKeys =
@@ -224,14 +319,21 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode)
         "sourceIsFriendly", "targetIsFriendly", "sourceMarker", "targetMarker", "packetID", "unpaired",
         "x", "y", "facing", "mapID", "itemLevel", "hitPoints", "maxHitPoints", "attackPower", "spellPower",
         "armor", "resourceActor", "classResources", "absorb", "mitigated", "unmitigatedAmount", "melee", "tick",
-        "isAoE", "killerInstance",
+        "isAoE", "killerInstance", "pin",
     ];
 
-    private static string FormatEvent(Report report, JsonElement e, long origin)
+    /// <param name="origin">Fight start for single-fight queries; null to prefix each line with its own fight.</param>
+    private static string FormatEvent(Report report, JsonElement e, long? origin)
     {
         var sb = new StringBuilder();
         var ts = (long)(GetDouble(e, "timestamp") ?? 0);
-        sb.Append(FormatTime(ts - origin)).Append(' ').Append(GetString(e, "type"));
+        if (origin is long o)
+            sb.Append(FormatTime(ts - o));
+        else if (GetInt(e, "fight") is int fid && report.GetFight(fid) is { } fight)
+            sb.Append('F').Append(fid).Append(' ').Append(FormatTime(ts - fight.StartTime));
+        else
+            sb.Append(FormatTime(ts));
+        sb.Append(' ').Append(GetString(e, "type"));
 
         var src = GetInt(e, "sourceID");
         var tgt = GetInt(e, "targetID");
@@ -327,14 +429,17 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode)
 
         var windowProps = new Dictionary<string, JsonElement>
         {
-            ["fight_id"] = Prop(new { type = "integer", description = "Fight id from get_report_overview. Omit to search the whole report." }),
-            ["start_sec"] = Prop(new { type = "number", description = "Window start in seconds from the start of the fight (or report if no fight_id)." }),
-            ["end_sec"] = Prop(new { type = "number", description = "Window end in seconds from the start of the fight (or report)." }),
+            ["fight_id"] = Prop(new { type = "integer", description = "One fight id from get_report_overview." }),
+            ["fight_ids"] = Prop(new { type = "array", items = new { type = "integer" }, description = "Several fight ids at once (results combined)." }),
+            ["all_boss_pulls"] = Prop(new { type = "boolean", description = "Every boss pull in the report (kills and wipes). Use for 'across the night' / 'most often' questions." }),
+            ["phase"] = Prop(new { type = "integer", description = "Only events during this boss phase id (see the phases list in get_report_overview). Works with one or many fights." }),
+            ["start_sec"] = Prop(new { type = "number", description = "Window start in seconds from the start of the fight. Single fight_id only." }),
+            ["end_sec"] = Prop(new { type = "number", description = "Window end in seconds from the start of the fight. Single fight_id only." }),
             ["hostility"] = Prop(new { type = "string", @enum = new[] { "Friendlies", "Enemies" }, description = "Whose perspective: Friendlies (default) = players' damage/healing/casts; Enemies = what NPCs did." }),
             ["ability_id"] = Prop(new { type = "integer", description = "Only this spell/ability game id (see find_abilities)." }),
             ["source_id"] = Prop(new { type = "integer", description = "Only events from this actor id." }),
             ["target_id"] = Prop(new { type = "integer", description = "Only events against this actor id (e.g. an add's actor id)." }),
-            ["filter_expression"] = Prop(new { type = "string", description = "Optional Warcraft Logs filter expression, e.g. \"ability.id IN (2825, 32182)\" or \"target.name = 'Ember'\"." }),
+            ["filter_expression"] = Prop(new { type = "string", description = "Optional Warcraft Logs filter expression, e.g. \"ability.id IN (2825, 32182)\", \"target.name = 'Ember'\", \"type = 'applydebuff'\"." }),
         };
 
         Dictionary<string, JsonElement> With(params (string Key, JsonElement Value)[] extra)
@@ -391,6 +496,25 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode)
             },
             new Tool
             {
+                Name = "count_events",
+                Description = """
+                    Count matching events, grouped (e.g. per player or per ability), across one fight, several fights or all boss pulls.
+                    Use for 'who got hit by / stood in / was affected by X the most', 'how many times', 'most often' questions.
+                    Also use it to identify an informally named mechanic ('eggs', 'pools', 'beams'): count DamageTaken and Debuffs
+                    events grouped by ability for the relevant fight/phase and look for a matching ability name.
+                    """,
+                InputSchema = new()
+                {
+                    Properties = With(
+                        ("data_type", Prop(new { type = "string", @enum = EventDataTypes })),
+                        ("event_type", Prop(new { type = "string", description = "Only this event type, e.g. damage, applydebuff, applybuff, cast, death, interrupt. Strongly recommended: Debuffs data includes apply AND remove events." })),
+                        ("group_by", Prop(new { type = "string", @enum = new[] { "target", "source", "ability", "target_ability", "source_ability", "fight", "type" }, description = "Default target (the player affected)." })),
+                        ("top", Prop(new { type = "integer", description = "Rows to return (default 25)." }))),
+                    Required = ["data_type"],
+                },
+            },
+            new Tool
+            {
                 Name = "get_pull_timeline",
                 Description = "The first player↔enemy interactions around the start of a fight (including 3 seconds before). Use for 'who pulled' / 'who ninja pulled'.",
                 InputSchema = new()
@@ -433,4 +557,19 @@ internal readonly struct ToolArgs(IReadOnlyDictionary<string, JsonElement> input
     public int? OptionalInt(string key) => OptionalDouble(key) is double d ? (int)d : null;
 
     public long? OptionalLong(string key) => OptionalDouble(key) is double d ? (long)d : null;
+
+    public bool? OptionalBool(string key) => Get(key) switch
+    {
+        { ValueKind: JsonValueKind.True } => true,
+        { ValueKind: JsonValueKind.False } => false,
+        { ValueKind: JsonValueKind.String } v when bool.TryParse(v.GetString(), out var b) => b,
+        _ => null,
+    };
+
+    public List<int>? OptionalIntArray(string key) => Get(key) switch
+    {
+        { ValueKind: JsonValueKind.Array } v => [.. v.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.Number).Select(x => (int)x.GetDouble())],
+        { ValueKind: JsonValueKind.Number } v => [(int)v.GetDouble()],
+        _ => null,
+    };
 }

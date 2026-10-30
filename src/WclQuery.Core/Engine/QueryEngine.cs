@@ -45,13 +45,24 @@ public sealed partial class QueryEngine(
         from a tool result.
 
         How to work:
-        - Start with get_report_overview to learn fight ids, players and enemy actor ids.
-        - If the question doesn't say which fight, use the most recent boss pull and say which one you used.
-          "Last pull", "the kill", "pull 5" etc. map to fights in the overview.
+        - Start with get_report_overview to learn fight ids, phases, players and enemy actor ids.
+        - Which fights: "last pull", "the kill", "pull 5" map to fights in the overview. Questions about
+          frequency or the whole raid ("most often", "tonight", "across all pulls") use all_boss_pulls.
+          Otherwise, if no fight is given, use the most recent boss pull. Always say which fights you used.
+        - Phases: "phase 1", "P2", "stage two", "intermission" map to the phase ids in the overview. Pass
+          phase to filter; it works across many fights at once.
         - Times users give ("at 2:30", "around 1 minute in") are relative to the start of that fight.
           Use a window of a few seconds either side unless they give an exact range.
         - Adds and bosses: find the actor id in the overview (or by name) and pass it as target_id.
-        - Prefer get_table for totals/rankings and get_events for "who did X / when did X happen".
+        - Prefer get_table for damage/healing totals, count_events for "how many times / who got hit by X
+          the most", and get_events for "who did X / when did X happen".
+        - Players describe mechanics informally ("eggs", "pools", "beams", "soak"). To find the ability:
+          run count_events with group_by ability on DamageTaken (event_type damage) and on Debuffs
+          (event_type applydebuff) for the relevant fight/phase, then pick the ability whose name fits.
+          find_abilities helps when you can guess part of the name. If more than one ability could be it,
+          answer for the most likely one and briefly name the alternatives. Say which ability you used.
+        - Be economical: you have a limited number of tool rounds, so combine fights in one call
+          (fight_ids / all_boss_pulls) instead of one call per fight, and make independent calls in parallel.
         - Bloodlust-type effects have these spell ids: Bloodlust 2825, Heroism 32182, Time Warp 80353,
           Primal Rage 264667, Fury of the Aspects 390386, Drums 444257/381301/309658. Look for Casts
           with filter_expression "ability.id IN (...)"; if none, check find_abilities.
@@ -76,8 +87,10 @@ public sealed partial class QueryEngine(
             : question;
         List<MessageParam> messages = [new UserMessageParam { Content = userText }];
 
-        for (var round = 0; round < _options.MaxToolRounds; round++)
+        // The last round withholds tools so Claude answers with what it has instead of giving up.
+        for (var round = 0; round <= _options.MaxToolRounds; round++)
         {
+            var finalRound = round == _options.MaxToolRounds;
             var response = await _claude.Messages.Create(new MessageCreateParams
             {
                 Model = _options.Model,
@@ -88,6 +101,7 @@ public sealed partial class QueryEngine(
                 },
                 OutputConfig = new OutputConfig { Effort = ParseEffort(_options.Effort) },
                 Tools = [.. ReportTools.Definitions],
+                ToolChoice = finalRound ? new ToolChoiceNone() : null,
                 Messages = messages,
             }, ct);
 
@@ -130,13 +144,19 @@ public sealed partial class QueryEngine(
                 return new QueryResult(answer.Length > 0 ? answer : "No answer was produced.", traces, inTokens, outTokens);
             }
 
+            if (round + 1 == _options.MaxToolRounds)
+            {
+                toolResults.Add(new TextBlockParam
+                {
+                    Text = "You have used all your lookups. Answer now with what you've found, and say plainly what is uncertain or unchecked.",
+                });
+            }
+
             messages.Add(new AssistantMessageParam { Content = assistantContent });
             messages.Add(new UserMessageParam { Content = toolResults });
         }
 
-        return new QueryResult(
-            "That question needed more lookups than I'm allowed per request. Try narrowing it to one fight or time window.",
-            traces, inTokens, outTokens);
+        return new QueryResult("No answer was produced.", traces, inTokens, outTokens);
     }
 
     private async Task<ToolResultBlockParam> RunToolAsync(
