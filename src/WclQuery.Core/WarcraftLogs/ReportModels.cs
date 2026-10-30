@@ -145,4 +145,6 @@ public sealed record ReportQuery
     public int? TargetId { get; init; }
     public string? FilterExpression { get; init; }
     public string? ViewBy { get; init; }
+    /// <summary>Ignore all events after this many player deaths in each fight.</summary>
+    public int? WipeCutoff { get; init; }
 }

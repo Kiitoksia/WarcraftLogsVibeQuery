@@ -12,7 +12,7 @@ namespace WclQuery.Core.Engine;
 /// compact, token-friendly text result with actor/ability IDs resolved to names.
 /// Times exposed to Claude are seconds relative to the start of a fight.
 /// </summary>
-public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode)
+public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, QuerySettings settings)
 {
     private const int MaxResultChars = 20_000;
 
@@ -197,6 +197,8 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode)
         // A phase-only filter is covered by start/end; anything else can't be carried into the URL.
         if (!string.IsNullOrEmpty(q.FilterExpression) && !q.FilterExpression.StartsWith("encounterPhase = ", StringComparison.Ordinal))
             label.Append(" (without the custom filter)");
+        if (q.WipeCutoff is not null)
+            label.Append(" (set the death cutoff on the Warcraft Logs page to match)");
         return new WclLink(label.ToString(), url.ToString());
     }
 
@@ -319,7 +321,7 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode)
 
     // ---- helpers ---------------------------------------------------------------
 
-    private static ReportQuery BuildQuery(Report report, ToolArgs args, string[] allowedTypes)
+    private ReportQuery BuildQuery(Report report, ToolArgs args, string[] allowedTypes)
     {
         var dataType = args.RequiredString("data_type");
         if (!allowedTypes.Contains(dataType))
@@ -386,6 +388,7 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode)
             SourceId = args.OptionalInt("source_id"),
             TargetId = args.OptionalInt("target_id"),
             FilterExpression = filter,
+            WipeCutoff = settings.DeathCutoff,
         };
     }
 
@@ -408,7 +411,8 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode)
             var ids => $"{ids.Count} fights ({string.Join(", ", ids)})",
         };
         var filter = string.IsNullOrEmpty(q.FilterExpression) ? "" : $", filter: {q.FilterExpression}";
-        return $"[{q.DataType}, {scope}{filter}]";
+        var cutoff = q.WipeCutoff is int n ? $", ignoring events after {n} player deaths per pull" : "";
+        return $"[{q.DataType}, {scope}{filter}{cutoff}]";
     }
 
     private static readonly HashSet<string> SkippedEventKeys =

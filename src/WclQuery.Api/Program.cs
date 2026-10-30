@@ -107,8 +107,11 @@ app.MapPost("/api/ask", async (AskRequest req, DiscordAuth auth, QueryEngine eng
     if (QueryEngine.ParseReport(req.Report ?? "") is not var (code, fight))
         return Results.BadRequest(new { error = "Paste a warcraftlogs.com report link or report code." });
 
+    if (ToSettings(req.Settings) is not { } settings)
+        return Results.BadRequest(new { error = "The death cutoff must be between 1 and 30." });
+
     logger.LogInformation("{User} asked about {Report}: {Question}", user.Name, code, req.Question);
-    return await RunAsync(() => engine.AskAsync(user.Id, code, req.Question.Trim(), req.Fight ?? fight, ct), logger);
+    return await RunAsync(() => engine.AskAsync(user.Id, code, req.Question.Trim(), req.Fight ?? fight, settings, ct), logger);
 }).RequireRateLimiting("ask");
 
 // Answers Claude's clarifying question, or asks a follow-up in the same conversation.
@@ -121,11 +124,22 @@ app.MapPost("/api/ask/{conversationId}/reply", async (string conversationId, Rep
     if (string.IsNullOrWhiteSpace(req.Message) || req.Message.Length > 500)
         return Results.BadRequest(new { error = "Replies can be up to 500 characters." });
 
+    if (ToSettings(req.Settings) is not { } settings)
+        return Results.BadRequest(new { error = "The death cutoff must be between 1 and 30." });
+
     logger.LogInformation("{User} replied in {Conversation}: {Message}", user.Name, conversationId, req.Message);
-    return await RunAsync(() => engine.ReplyAsync(user.Id, conversationId, req.Message.Trim(), ct), logger);
+    return await RunAsync(() => engine.ReplyAsync(user.Id, conversationId, req.Message.Trim(), settings, ct), logger);
 }).RequireRateLimiting("ask");
 
 app.Run();
+
+// Null means the settings were invalid.
+static QuerySettings? ToSettings(SettingsDto? dto) => dto?.DeathCutoff switch
+{
+    null => QuerySettings.None,
+    >= 1 and <= 30 and var n => new QuerySettings { DeathCutoff = n },
+    _ => null,
+};
 
 static async Task<IResult> RunAsync(Func<Task<QueryResult>> run, ILogger logger)
 {
@@ -148,6 +162,8 @@ static async Task<IResult> RunAsync(Func<Task<QueryResult>> run, ILogger logger)
     }
 }
 
-internal sealed record AskRequest(string? Report, string Question, int? Fight);
+internal sealed record SettingsDto(int? DeathCutoff);
 
-internal sealed record ReplyRequest(string Message);
+internal sealed record AskRequest(string? Report, string Question, int? Fight, SettingsDto? Settings);
+
+internal sealed record ReplyRequest(string Message, SettingsDto? Settings);

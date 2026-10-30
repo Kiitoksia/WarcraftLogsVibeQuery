@@ -92,6 +92,21 @@ Set these environment variables there (double underscore = nested setting):
 Secrets and variables → Actions → **Variables** → add `API_BASE_URL` (e.g. `https://wclq-api.azurewebsites.net`).
 Pushing changes under `web/` redeploys.
 
+## Guild glossary
+
+[`src/WclQuery.Core/Knowledge/glossary.md`](src/WclQuery.Core/Knowledge/glossary.md) tells Claude what
+the guild's informal names mean, e.g. "eggs" = Rancid Yolk on Ula'tek. Claude reads it before every
+question. Add an entry whenever Claude has to ask what a term means, or gets it wrong. Pushing the
+change redeploys the API.
+
+## Filters
+
+The site's Filters panel applies to every lookup Claude makes, for example "Ignore events after N player
+deaths", which uses Warcraft Logs' `wipeCutoff`. To add another filter: add a property to
+[`QuerySettings`](src/WclQuery.Core/Engine/QuerySettings.cs), apply it in `ReportTools.BuildQuery`,
+accept it in the API's `SettingsDto`, and add the control in `web/index.html` + `currentSettings()` in
+`web/app.js`.
+
 ## Adding a new kind of question
 
 Most questions work with the generic `get_table` / `get_events` tools. If one keeps going wrong,

@@ -2,6 +2,7 @@
   const API = window.WCLQ_CONFIG.apiBase.replace(/\/$/, "");
   const TOKEN_KEY = "wclq_token";
   const REPORT_KEY = "wclq_report";
+  const FILTERS_KEY = "wclq_filters";
 
   const EXAMPLES = [
     "Who pressed Bloodlust on the last pull, and when?",
@@ -27,6 +28,7 @@
     authError: $("auth-error"), askPanel: $("ask-panel"), report: $("report"),
     question: $("question"), examples: $("examples"), askBtn: $("ask-btn"),
     charCount: $("char-count"), results: $("results"),
+    deathsOn: $("filter-deaths"), deathsCount: $("filter-deaths-count"),
   };
 
   const storage = {
@@ -97,6 +99,36 @@
     }
   }
 
+  // ---- Filters ------------------------------------------------------------------
+
+  // Filters are sent with every message; the server applies them to all of Claude's lookups.
+  function currentSettings() {
+    const n = Math.round(Number(els.deathsCount.value));
+    return { deathCutoff: els.deathsOn.checked && n >= 1 && n <= 30 ? n : null };
+  }
+
+  function describeSettings(settings) {
+    return settings.deathCutoff ? `Ignoring events after ${settings.deathCutoff} player deaths` : null;
+  }
+
+  function loadFilters() {
+    try {
+      const saved = JSON.parse(storage.get(FILTERS_KEY) || "{}");
+      els.deathsOn.checked = !!saved.deathsOn;
+      if (saved.deathsCount) els.deathsCount.value = saved.deathsCount;
+    } catch { /* ignore bad saved data */ }
+    updateFilterState();
+  }
+
+  function saveFilters() {
+    storage.set(FILTERS_KEY, JSON.stringify({ deathsOn: els.deathsOn.checked, deathsCount: els.deathsCount.value }));
+    updateFilterState();
+  }
+
+  function updateFilterState() {
+    els.deathsCount.disabled = !els.deathsOn.checked;
+  }
+
   // ---- Ask form -----------------------------------------------------------------
 
   function renderExamples() {
@@ -157,7 +189,10 @@
       this.replyInput.value = "";
       this.disableOptions();
 
+      const settings = currentSettings();
       this.log.append(el("p", "msg-user", text));
+      const filterNote = describeSettings(settings);
+      if (filterNote) this.log.append(el("p", "msg-filters", `Filter: ${filterNote}`));
       const pending = el("p", "thinking");
       pending.append(el("span", "spinner"), document.createTextNode("Reading the logs…"));
       this.log.append(pending);
@@ -167,10 +202,10 @@
         try {
           res = this.conversationId
             ? await api(`/api/ask/${encodeURIComponent(this.conversationId)}/reply`, {
-                method: "POST", body: JSON.stringify({ message: text }),
+                method: "POST", body: JSON.stringify({ message: text, settings }),
               })
             : await api("/api/ask", {
-                method: "POST", body: JSON.stringify({ report: this.report, question: text }),
+                method: "POST", body: JSON.stringify({ report: this.report, question: text, settings }),
               });
         } catch {
           this.error("Couldn't reach the server.");
@@ -377,6 +412,9 @@
     location.href = `${API}/auth/login?returnUrl=${encodeURIComponent(location.href.split("#")[0])}`;
   };
   els.askBtn.onclick = ask;
+  els.deathsOn.addEventListener("change", saveFilters);
+  els.deathsCount.addEventListener("change", saveFilters);
+  loadFilters();
   els.question.addEventListener("input", updateCount);
   els.question.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) ask();

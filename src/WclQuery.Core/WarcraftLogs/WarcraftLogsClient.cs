@@ -51,12 +51,12 @@ public sealed class WarcraftLogsClient(
     private const string EventsQuery = """
         query Events($code: String!, $startTime: Float!, $endTime: Float!, $fightIDs: [Int],
                      $dataType: EventDataType, $hostilityType: HostilityType, $abilityID: Float,
-                     $sourceID: Int, $targetID: Int, $filterExpression: String, $limit: Int) {
+                     $sourceID: Int, $targetID: Int, $filterExpression: String, $wipeCutoff: Int, $limit: Int) {
           reportData {
             report(code: $code) {
               events(startTime: $startTime, endTime: $endTime, fightIDs: $fightIDs,
                      dataType: $dataType, hostilityType: $hostilityType, abilityID: $abilityID,
-                     sourceID: $sourceID, targetID: $targetID, filterExpression: $filterExpression,
+                     sourceID: $sourceID, targetID: $targetID, filterExpression: $filterExpression, wipeCutoff: $wipeCutoff,
                      limit: $limit) {
                 data
                 nextPageTimestamp
@@ -69,12 +69,12 @@ public sealed class WarcraftLogsClient(
     private const string TableQuery = """
         query Table($code: String!, $startTime: Float!, $endTime: Float!, $fightIDs: [Int],
                     $dataType: TableDataType, $hostilityType: HostilityType, $abilityID: Float,
-                    $sourceID: Int, $targetID: Int, $filterExpression: String, $viewBy: ViewType) {
+                    $sourceID: Int, $targetID: Int, $filterExpression: String, $wipeCutoff: Int, $viewBy: ViewType) {
           reportData {
             report(code: $code) {
               table(startTime: $startTime, endTime: $endTime, fightIDs: $fightIDs,
                     dataType: $dataType, hostilityType: $hostilityType, abilityID: $abilityID,
-                    sourceID: $sourceID, targetID: $targetID, filterExpression: $filterExpression,
+                    sourceID: $sourceID, targetID: $targetID, filterExpression: $filterExpression, wipeCutoff: $wipeCutoff,
                     viewBy: $viewBy)
             }
           }
@@ -84,12 +84,12 @@ public sealed class WarcraftLogsClient(
     private const string GraphQuery = """
         query Graph($code: String!, $startTime: Float!, $endTime: Float!, $fightIDs: [Int],
                     $dataType: GraphDataType, $hostilityType: HostilityType, $abilityID: Float,
-                    $sourceID: Int, $targetID: Int, $filterExpression: String) {
+                    $sourceID: Int, $targetID: Int, $filterExpression: String, $wipeCutoff: Int) {
           reportData {
             report(code: $code) {
               graph(startTime: $startTime, endTime: $endTime, fightIDs: $fightIDs,
                     dataType: $dataType, hostilityType: $hostilityType, abilityID: $abilityID,
-                    sourceID: $sourceID, targetID: $targetID, filterExpression: $filterExpression)
+                    sourceID: $sourceID, targetID: $targetID, filterExpression: $filterExpression, wipeCutoff: $wipeCutoff)
             }
           }
         }
@@ -164,6 +164,7 @@ public sealed class WarcraftLogsClient(
         if (q.SourceId is int s) vars["sourceID"] = s;
         if (q.TargetId is int t) vars["targetID"] = t;
         if (!string.IsNullOrWhiteSpace(q.FilterExpression)) vars["filterExpression"] = q.FilterExpression;
+        if (q.WipeCutoff is int cutoff) vars["wipeCutoff"] = cutoff;
         return vars;
     }
 

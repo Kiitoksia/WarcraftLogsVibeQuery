@@ -1,4 +1,4 @@
-﻿// Developer harness for the query engine. Uses the same user-secrets as WclQuery.Api.
+// Developer harness for the query engine. Uses the same user-secrets as WclQuery.Api.
 //   dotnet run --project src/WclQuery.Cli -- find [zoneId]          list recent public reports
 //   dotnet run --project src/WclQuery.Cli -- tools <report>           run each tool with sample input
 //   dotnet run --project src/WclQuery.Cli -- ask <report> "<question>" full Claude round trip
@@ -23,6 +23,13 @@ builder.Services.AddSingleton<QueryEngine>();
 using var host = builder.Build();
 
 var wcl = host.Services.GetRequiredService<WarcraftLogsClient>();
+
+// Optional filter flags, e.g. --deaths=2 (ignore events after the 2nd player death), usable with any command.
+var settings = QuerySettings.None;
+if (args.FirstOrDefault(a => a.StartsWith("--deaths=")) is string deathsArg)
+    settings = new QuerySettings { DeathCutoff = int.Parse(deathsArg["--deaths=".Length..]) };
+args = [.. args.Where(a => !a.StartsWith("--"))];
+
 var command = args.ElementAtOrDefault(0) ?? "";
 
 switch (command)
@@ -50,7 +57,7 @@ switch (command)
     {
         var (code, _) = QueryEngine.ParseReport(args[1]) ?? throw new ArgumentException("Bad report code/URL.");
         var report = await wcl.GetReportAsync(code);
-        var tools = new ReportTools(wcl, code);
+        var tools = new ReportTools(wcl, code, settings);
         var boss = report.Fights.LastOrDefault(f => f.IsBoss) ?? report.Fights.Last();
 
         async Task Run(string name, object input)
@@ -76,7 +83,7 @@ switch (command)
         var (code, _) = QueryEngine.ParseReport(args[1]) ?? throw new ArgumentException("Bad report code/URL.");
         var input = JsonDocument.Parse(args.ElementAtOrDefault(3) ?? "{}").RootElement
             .EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone());
-        var output = await new ReportTools(wcl, code).ExecuteAsync(args[2], input, default);
+        var output = await new ReportTools(wcl, code, settings).ExecuteAsync(args[2], input, default);
         Console.WriteLine(output.Text);
         if (output.Link is not null) Console.WriteLine($"[link] {output.Link.Label}: {output.Link.Url}");
         if (output.Chart is not null)
@@ -90,12 +97,12 @@ switch (command)
         // Each extra argument answers Claude's clarifying question, or is sent as a follow-up.
         var (code, fight) = QueryEngine.ParseReport(args[1]) ?? throw new ArgumentException("Bad report code/URL.");
         var engine = host.Services.GetRequiredService<QueryEngine>();
-        var result = await engine.AskAsync("cli", code, args[2], fight, default);
+        var result = await engine.AskAsync("cli", code, args[2], fight, settings, default);
         Print(result);
         foreach (var reply in args.Skip(3))
         {
             Console.WriteLine($"\n>>> {reply}\n");
-            result = await engine.ReplyAsync("cli", result.ConversationId, reply, default);
+            result = await engine.ReplyAsync("cli", result.ConversationId, reply, settings, default);
             Print(result);
         }
         break;

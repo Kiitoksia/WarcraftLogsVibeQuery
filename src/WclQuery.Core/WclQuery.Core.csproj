@@ -12,4 +12,8 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.14" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Knowledge\glossary.md" LogicalName="WclQuery.Glossary" />
+  </ItemGroup>
+
 </Project>

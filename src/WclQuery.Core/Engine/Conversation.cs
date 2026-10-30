@@ -15,6 +15,9 @@ public sealed class Conversation
 
     public List<MessageParam> Messages { get; } = [];
 
+    /// <summary>Filters in effect for the latest message (the user can change them between messages).</summary>
+    public QuerySettings Settings { get; set; } = QuerySettings.None;
+
     /// <summary>The ask_user tool call waiting for the user's reply, if any.</summary>
     public string? PendingQuestionToolUseId { get; set; }
 
