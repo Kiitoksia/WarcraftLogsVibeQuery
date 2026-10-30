@@ -20,6 +20,8 @@ public static class ServiceCollectionExtensions
         services.Configure<GlossaryOptions>(config.GetSection(GlossaryOptions.SectionName));
         services.Configure<AnthropicOptions>(config.GetSection(AnthropicOptions.SectionName));
         services.Configure<AzureOpenAIOptions>(config.GetSection(AzureOpenAIOptions.SectionName));
+        services.Configure<BlizzardOptions>(config.GetSection(BlizzardOptions.SectionName));
+        services.AddHttpClient<EncounterJournal>();
 
         services.AddMemoryCache();
         services.AddHttpClient<WarcraftLogsClient>();

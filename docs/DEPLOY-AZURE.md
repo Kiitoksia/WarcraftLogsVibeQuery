@@ -68,6 +68,8 @@ then **Apply** and confirm the restart.
 | `AzureOpenAI__Deployment` | the deployment name, e.g. `gpt-6.1-sol` |
 | `AzureOpenAI__ApiKey` | the deployment's key |
 | `AzureOpenAI__ReasoningEffort` | `low` (default), `medium` or `high` |
+| `Blizzard__ClientId` / `Blizzard__ClientSecret` | Battle.net API client from develop.battle.net, for the encounter journal lookup (optional: without it the AI works from the log and glossary only) |
+| `Blizzard__Region` | `eu` (default) or `us`; `Blizzard__Locale` defaults to `en_GB` |
 | `Claude__ApiKey` | Anthropic key (workspace-scoped), only needed for `anthropic` |
 | `Claude__Model` | `claude-opus-5-5`, `claude-sonnet-5-5` or `claude-haiku-5-5` |
 | `Claude__Effort` | `medium` |

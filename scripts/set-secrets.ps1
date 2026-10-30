@@ -16,6 +16,8 @@ $values = [ordered]@{
     "AzureOpenAI:Deployment"    = Read-Host -Prompt "Azure OpenAI deployment name (e.g. gpt-6.1-sol)"
     "AzureOpenAI:ApiKey"        = Read-Secret "Azure OpenAI API key"
     "Llm:Provider"              = Read-Host -Prompt "Which model to use: anthropic or azure-openai"
+    "Blizzard:ClientId"         = Read-Host -Prompt "Battle.net API client ID (for the encounter journal)"
+    "Blizzard:ClientSecret"     = Read-Secret "Battle.net API client secret"
 }
 
 foreach ($key in $values.Keys) {

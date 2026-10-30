@@ -9,10 +9,10 @@ namespace WclQuery.Core.Knowledge;
 /// in the glossary's own format, looking up spell ids in a report when one is given. It only drafts:
 /// the editor reviews the result and saves it themselves.
 /// </summary>
-public sealed class GlossaryAssistant(ILlmProvider llm, WarcraftLogsClient wcl)
+public sealed class GlossaryAssistant(ILlmProvider llm, WarcraftLogsClient wcl, EncounterJournal journal)
 {
     private const int MaxRounds = 6;
-    private static readonly string[] LookupTools = ["get_report_overview", "find_abilities"];
+    private static readonly string[] LookupTools = ["get_report_overview", "find_abilities", "get_encounter_journal"];
 
     private const string Instructions = """
         You maintain a World of Warcraft raid guild's glossary: a Markdown document that tells an AI what the guild's
@@ -29,7 +29,8 @@ public sealed class GlossaryAssistant(ILlmProvider llm, WarcraftLogsClient wcl)
           under the relevant boss.
 
         Spell ids: if a report is available, use find_abilities (and get_report_overview for boss names) to look up
-        the exact ability names and spell ids. Never invent an id; if you can't find one, write the ability name
+        the exact ability names and spell ids. get_encounter_journal says what each ability and add does, which
+        helps confirm you picked the right one. Never invent an id; if you can't find one, write the ability name
         without an id.
 
         Reply with ONLY the complete updated glossary in Markdown: no commentary, no code fences.
@@ -43,7 +44,7 @@ public sealed class GlossaryAssistant(ILlmProvider llm, WarcraftLogsClient wcl)
         IReadOnlyList<ToolSpec> tools = reportCode is null
             ? []
             : [.. ReportTools.Definitions.Where(t => LookupTools.Contains(t.Name))];
-        var reportTools = reportCode is null ? null : new ReportTools(wcl, reportCode, QuerySettings.None);
+        var reportTools = reportCode is null ? null : new ReportTools(wcl, reportCode, QuerySettings.None, journal);
 
         session.AddUserText($"""
             Current glossary:

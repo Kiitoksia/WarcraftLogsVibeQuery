@@ -113,6 +113,13 @@ the site's **Glossary** button; changes apply to the next question, no deploy ne
 the server (see `GlossaryOptions`), with every previous version kept. The first version is seeded from
 [`src/WclQuery.Core/Knowledge/glossary.md`](src/WclQuery.Core/Knowledge/glossary.md).
 
+## Encounter journal
+
+With a Battle.net API client configured (`Blizzard:ClientId` / `ClientSecret`), the AI can look up Blizzard's
+in-game Encounter Journal for a boss (`get_encounter_journal`): what each ability and add does. It uses it on
+demand to work out informal terms (e.g. "eggs" = Blightscale Spawn). Order of trust: the log for what happened,
+then the guild glossary, then the journal. Entries are cached for a day.
+
 ## Filters
 
 The site's Filters panel applies to every lookup Claude makes, for example "Ignore events after N player

@@ -53,7 +53,7 @@ switch (command)
     {
         var (code, _) = QueryEngine.ParseReport(args[1]) ?? throw new ArgumentException("Bad report code/URL.");
         var report = await wcl.GetReportAsync(code);
-        var tools = new ReportTools(wcl, code, settings);
+        var tools = new ReportTools(wcl, code, settings, host.Services.GetRequiredService<WclQuery.Core.Knowledge.EncounterJournal>());
         var boss = report.Fights.LastOrDefault(f => f.IsBoss) ?? report.Fights.Last();
 
         async Task Run(string name, object input)
@@ -79,7 +79,7 @@ switch (command)
         var (code, _) = QueryEngine.ParseReport(args[1]) ?? throw new ArgumentException("Bad report code/URL.");
         var input = JsonDocument.Parse(args.ElementAtOrDefault(3) ?? "{}").RootElement
             .EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone());
-        var output = await new ReportTools(wcl, code, settings).ExecuteAsync(args[2], input, default);
+        var output = await new ReportTools(wcl, code, settings, host.Services.GetRequiredService<WclQuery.Core.Knowledge.EncounterJournal>()).ExecuteAsync(args[2], input, default);
         Console.WriteLine(output.Text);
         if (output.Link is not null) Console.WriteLine($"[link] {output.Link.Label}: {output.Link.Url}");
         if (output.Chart is not null)

@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using WclQuery.Core.Engine.Llm;
+using WclQuery.Core.Knowledge;
 using WclQuery.Core.WarcraftLogs;
 
 namespace WclQuery.Core.Engine;
@@ -12,7 +13,8 @@ namespace WclQuery.Core.Engine;
 /// compact, token-friendly text result with actor/ability IDs resolved to names.
 /// Times exposed to the model are seconds relative to the start of a fight.
 /// </summary>
-public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, QuerySettings settings)
+public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, QuerySettings settings,
+    EncounterJournal? journal = null)
 {
     private const int MaxResultChars = 12_000;
 
@@ -43,6 +45,7 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
             "count_events" => new ToolOutput(await CountEventsAsync(report, args, ct)),
             "get_pull_timeline" => new ToolOutput(await PullTimelineAsync(report, args, ct)),
             "show_chart" => await ChartAsync(report, args, ct),
+            "get_encounter_journal" => new ToolOutput(await JournalAsync(report, args, ct)),
             _ => throw new ToolInputException($"Unknown tool '{name}'."),
         };
         return output.Text.Length <= MaxResultChars
@@ -137,6 +140,24 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
         if (table is null) return new ToolOutput("No table data.");
         var pruned = Prune(table, depth: 0);
         return new ToolOutput($"{DescribeWindow(report, q)}\n{pruned?.ToJsonString()}", Link: LinkFor(report, q));
+    }
+
+    // ---- get_encounter_journal -----------------------------------------------
+
+    private async Task<string> JournalAsync(Report report, ToolArgs args, CancellationToken ct)
+    {
+        if (journal is not { IsConfigured: true })
+            return "The encounter journal isn't available on this site. Work from the log and the glossary.";
+        var boss = args.OptionalString("boss") ?? report.Fights.LastOrDefault(f => f.IsBoss)?.Name
+            ?? throw new ToolInputException("Give the boss name.");
+        try
+        {
+            return await journal.GetBossAsync(boss, report.Zone?.Name, ct);
+        }
+        catch (EncounterJournalException ex)
+        {
+            throw new ToolInputException(ex.Message);
+        }
     }
 
     // ---- show_chart ----------------------------------------------------------
@@ -876,6 +897,24 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
                         ["filter_expression"] = windowProps["filter_expression"],
                     },
                     Required = ["title", "data_type"],
+                },
+            },
+            new Tool
+            {
+                Name = "get_encounter_journal",
+                Description = """
+                    Blizzard's in-game Encounter Journal for a boss: its phases, abilities (with spell ids) and adds,
+                    with what each one does. Use it when you need to know what a mechanic or add IS, e.g. to match a
+                    player's informal term ("eggs", "pools", "the shield") to the right ability or enemy, or to tell
+                    avoidable damage from unavoidable. The log is the truth about what happened; the guild glossary
+                    outranks the journal for what the guild means by a term.
+                    """,
+                InputSchema = new()
+                {
+                    Properties = new Dictionary<string, JsonElement>
+                    {
+                        ["boss"] = Prop(new { type = "string", description = "Boss name as in the report overview, e.g. \"Ula'tek\". Defaults to the report's last boss." }),
+                    },
                 },
             },
             new Tool

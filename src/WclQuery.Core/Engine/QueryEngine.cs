@@ -58,6 +58,7 @@ public sealed partial class QueryEngine(
     WarcraftLogsClient wcl,
     ConversationStore conversations,
     GlossaryStore glossary,
+    EncounterJournal journal,
     ILlmProvider llm,
     IOptions<QueryEngineOptions> options,
     ILogger<QueryEngine> logger)
@@ -131,7 +132,8 @@ public sealed partial class QueryEngine(
           glossary (at the end of these instructions): if the term is there, use that ability and follow its notes.
           Otherwise, find candidates: run count_events with group_by ability on DamageTaken (event_type damage) and
           on Debuffs (event_type applydebuff) for the relevant fight/phase; find_abilities helps when you can guess
-          part of the name. Then:
+          part of the name; get_encounter_journal says what each ability and add actually does (e.g. which add
+          hatches from an egg, which ability is the pool), which often settles it. Then:
           - If exactly one ability's name literally contains the user's term (e.g. "waves" → Caustic Waves),
             use it.
           - Otherwise you MUST call ask_user with the 2-5 most likely candidates as options before
@@ -241,7 +243,7 @@ public sealed partial class QueryEngine(
 
     private async Task<QueryResult> RunLoopAsync(Conversation conv, CancellationToken ct)
     {
-        var tools = new ReportTools(wcl, conv.ReportCode, conv.Settings);
+        var tools = new ReportTools(wcl, conv.ReportCode, conv.Settings, journal);
         var traces = new List<ToolCallTrace>();
         var charts = new List<ChartData>();
         var links = new List<WclLink>();
