@@ -91,7 +91,8 @@ Pushing changes under `web/` redeploys.
 ## Guild glossary
 
 The glossary tells Claude what the guild's informal names mean, e.g. "eggs" = Rancid Yolk on Ula'tek.
-Claude reads it before every question. Officers (Discord roles in `Discord:OfficerRoleIds`) edit it from
+Claude reads it before every question. Officers (Discord roles in `Discord:OfficerRoleIds`) and anyone whose
+Discord user id is in `Discord:EditorUserIds` edit it from
 the site's **Glossary** button; changes apply to the next question, no deploy needed. It's stored on
 the server (see `GlossaryOptions`), with every previous version kept. The first version is seeded from
 [`src/WclQuery.Core/Knowledge/glossary.md`](src/WclQuery.Core/Knowledge/glossary.md).

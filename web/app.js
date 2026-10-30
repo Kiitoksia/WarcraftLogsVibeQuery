@@ -533,7 +533,7 @@
       ? `Last edited by ${g.updatedBy} on ${new Date(g.updatedAt).toLocaleString()}`
       : "Not edited yet (this is the built-in starting version).";
     els.glossaryEdit.hidden = !g.canEdit;
-    if (!g.canEdit) els.glossaryMeta.textContent += " · Only officers can edit it.";
+    if (!g.canEdit) els.glossaryMeta.textContent += " · Only officers and listed editors can edit it.";
   }
 
   function setGlossaryEditing(editing) {

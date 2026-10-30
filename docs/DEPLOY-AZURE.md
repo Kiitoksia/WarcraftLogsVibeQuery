@@ -52,6 +52,7 @@ New apps have this switched off by default.
 3. In the Discord app (not the website): **User Settings → Advanced → Developer Mode** on. Then:
    - Right-click your guild server icon → **Copy Server ID**.
    - Server Settings → Roles → right-click each role that should have access (Raider, Officer, …) → **Copy Role ID**.
+   - To give individual people glossary editing: right-click their name (or your own avatar) → **Copy User ID**.
 
 ## 4. Enter the settings in Azure
 
@@ -71,6 +72,7 @@ then **Apply** and confirm the restart.
 | `Discord__GuildId` | your server ID |
 | `Discord__AllowedRoleIds__0` | Raider role ID (add `__1`, `__2`… for more roles) |
 | `Discord__OfficerRoleIds__0` | Officer role ID: can edit the guild glossary, and can always use the site (add `__1`… for more) |
+| `Discord__EditorUserIds__0` | Your own Discord **user** ID, to edit the glossary without the officer role (add `__1`… for more people) |
 | `Cors__AllowedOrigins__0` | `https://kiitoksia.github.io` |
 | `RateLimit__QuestionsPerHour` | `30` |
 

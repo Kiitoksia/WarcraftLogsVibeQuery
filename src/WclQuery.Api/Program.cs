@@ -109,19 +109,19 @@ app.MapGet("/auth/callback", async (string? code, string? state, string? error, 
 app.MapGet("/api/me", (DiscordAuth auth, HttpContext ctx) =>
     auth.GetUser(ctx) is { } user ? Results.Ok(user) : Results.Unauthorized());
 
-// ---- Glossary (everyone can read; officers can edit) ----------------------------
+// ---- Glossary (everyone can read; officers and listed editors can edit) ----------------------------
 
 app.MapGet("/api/glossary", (DiscordAuth auth, GlossaryStore glossary, HttpContext ctx) =>
 {
     if (auth.GetUser(ctx) is not { } user) return Results.Unauthorized();
     var g = glossary.Get();
-    return Results.Ok(new { g.Text, g.UpdatedBy, g.UpdatedAt, canEdit = user.IsOfficer });
+    return Results.Ok(new { g.Text, g.UpdatedBy, g.UpdatedAt, canEdit = user.CanEditGlossary });
 });
 
 app.MapPut("/api/glossary", (GlossaryUpdate req, DiscordAuth auth, GlossaryStore glossary, HttpContext ctx) =>
 {
     if (auth.GetUser(ctx) is not { } user) return Results.Unauthorized();
-    if (!user.IsOfficer) return Results.Json(new { error = "Only officers can edit the glossary." }, statusCode: StatusCodes.Status403Forbidden);
+    if (!user.CanEditGlossary) return Results.Json(new { error = "Only officers and listed glossary editors can edit the glossary." }, statusCode: StatusCodes.Status403Forbidden);
     if (req.Text is null || req.Text.Length > GlossaryStore.MaxLength)
         return Results.BadRequest(new { error = $"The glossary can be up to {GlossaryStore.MaxLength:N0} characters." });
 
