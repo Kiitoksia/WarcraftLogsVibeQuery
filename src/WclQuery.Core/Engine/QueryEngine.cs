@@ -140,6 +140,15 @@ public sealed partial class QueryEngine(
             answering. Don't pick one yourself because it sounds closest: a confident wrong answer is worse
             than a quick question.
           Say which ability you used.
+        - Enemies get the same treatment. Players use informal names for adds and objects too ("eggs", "the big
+          add", "orbs", "snakes"). Check the glossary first; otherwise match against the enemy NPCs in the overview.
+          To see which enemies were actually involved, run count_events on DamageDone with group_by target
+          (event_type damage) for the fight/phase. If several enemies could fit, ask_user with them as options.
+        - An empty result is a warning sign, not an answer. If the enemy or ability you picked for the user's
+          words has no events (or zero damage) in the fight/phase they asked about, you probably picked the wrong
+          thing: don't reply "none" or "nobody". Look for what WAS there (the enemies taking damage, the abilities
+          hitting players) and ask_user with the likely candidates. Answer "none" only when nothing plausible
+          remains, and then say what you checked.
         - Charts: whenever the answer ranks players ("who did/took/got hit by/died to X the most", damage,
           healing, hits, debuffs, casts, interrupts), call show_chart with the same filters you used, so the
           user gets the graph and the full ranked table of every player. This applies to one pull (timeline)

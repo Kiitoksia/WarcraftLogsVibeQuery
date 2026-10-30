@@ -448,6 +448,8 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
                 Key: g.Key,
                 Count: g.Count(),
                 Amount: g.Sum(e => EventValue(e, value)),
+                // Shown separately so a shielded target (lots of hits, little landing) doesn't look untouched.
+                Absorbed: value == "amount" ? g.Sum(e => GetDouble(e, "absorbed") ?? 0) : 0,
                 Fights: g.Select(e => GetInt(e, "fight")).Distinct().Count()))
             .OrderByDescending(r => value == "amount" ? r.Count : r.Amount)
             .ToList();
@@ -455,9 +457,13 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
         var sb = new StringBuilder();
         sb.AppendLine(DescribeWindow(report, q));
         var amountLabel = value switch { "absorbed" => "total absorbed", "total" => "total amount+absorbed", _ => "total amount" };
-        sb.AppendLine($"{page.Data.Count} events scanned, {rows.Count} groups (by {groupBy}). count | {groupBy} | {amountLabel} | fights it appears in:");
+        var showAbsorbed = rows.Any(r => r.Absorbed > 0);
+        sb.AppendLine($"{page.Data.Count} events scanned, {rows.Count} groups (by {groupBy}). count | {groupBy} | {amountLabel}{(showAbsorbed ? " | absorbed by shields" : "")} | fights it appears in:");
+        static string Num(double v) => v > 0 ? v.ToString("N0", CultureInfo.InvariantCulture) : "-";
         foreach (var r in rows.Take(top))
-            sb.AppendLine($"  {r.Count} | {r.Key} | {(r.Amount > 0 ? r.Amount.ToString("N0", CultureInfo.InvariantCulture) : "-")} | {r.Fights}");
+            sb.AppendLine($"  {r.Count} | {r.Key} | {Num(r.Amount)}{(showAbsorbed ? $" | {Num(r.Absorbed)}" : "")} | {r.Fights}");
+        if (showAbsorbed)
+            sb.AppendLine("Note: a target with many hits but little amount and a large absorbed total was shielded; the absorbed column is the damage done into its shield.");
         if (rows.Count > top) sb.AppendLine($"  …{rows.Count - top} more groups");
         if (page.Data.Count >= MaxCountedEvents)
             sb.AppendLine($"WARNING: stopped after {MaxCountedEvents} events, so counts are partial. Add filters (ability_id, event_type, phase) to narrow it.");
