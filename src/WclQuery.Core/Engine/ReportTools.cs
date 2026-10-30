@@ -504,15 +504,18 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
             start = fight.StartTime;
             end = fight.EndTime;
 
-            // Narrow the window to the phase itself so charts and links cover just that phase.
+            // Narrow the window to the phase so charts and links cover just that phase. Some bosses alternate
+            // phases (P1, P2, P1, P2…), so span first to last occurrence; the encounterPhase filter below
+            // drops the other phases' segments in between.
             var transitions = fight.PhaseTransitions.OrderBy(t => t.StartTime).ToList();
-            var idx = phase is int ph ? transitions.FindIndex(t => t.Id == ph) : -1;
-            if (phase is not null && transitions.Count > 0 && idx < 0)
+            var first = phase is int ph ? transitions.FindIndex(t => t.Id == ph) : -1;
+            if (phase is not null && transitions.Count > 0 && first < 0)
                 throw new ToolInputException($"Fight {fight.Id} never reached phase {phase}.");
-            if (idx >= 0)
+            if (first >= 0)
             {
-                start = transitions[idx].StartTime;
-                end = idx + 1 < transitions.Count ? transitions[idx + 1].StartTime : fight.EndTime;
+                var last = transitions.FindLastIndex(t => t.Id == phase);
+                start = transitions[first].StartTime;
+                end = last + 1 < transitions.Count ? transitions[last + 1].StartTime : fight.EndTime;
             }
 
             if (args.OptionalDouble("start_sec") is double s) start = Math.Max(start, fight.StartTime + (long)(s * 1000));

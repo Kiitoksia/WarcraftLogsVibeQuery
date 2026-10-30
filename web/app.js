@@ -346,7 +346,10 @@
           for (const option of data.options) {
             const b = el("button", "chip option", option);
             b.type = "button";
-            b.onclick = () => this.send(option);
+            // "Something else / other / I'll type it" means "let me type", so focus the box instead of sending.
+            b.onclick = /something else|\bother\b|type it|i'll type|let me type|own answer/i.test(option)
+              ? () => { this.replyInput.placeholder = "Type your answer"; this.replyInput.focus(); }
+              : () => this.send(option);
             opts.append(b);
           }
           q.append(opts);

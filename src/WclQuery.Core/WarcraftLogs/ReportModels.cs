@@ -24,6 +24,21 @@ public sealed class Report
 
     public void BuildLookups()
     {
+        // The API sends null (not []) for lists that don't apply, e.g. phaseTransitions on trash fights,
+        // and System.Text.Json writes that null over the property defaults. Normalise once here.
+        Fights ??= [];
+        Phases ??= [];
+        MasterData ??= new();
+        MasterData.Actors ??= [];
+        MasterData.Abilities ??= [];
+        foreach (var f in Fights)
+        {
+            f.FriendlyPlayers ??= [];
+            f.EnemyNpcs ??= [];
+            f.PhaseTransitions ??= [];
+        }
+        foreach (var p in Phases) p.Phases ??= [];
+
         ActorsById = MasterData.Actors.GroupBy(a => a.Id).ToDictionary(g => g.Key, g => g.First());
         AbilitiesById = MasterData.Abilities.GroupBy(a => a.GameId).ToDictionary(g => g.Key, g => g.First());
     }

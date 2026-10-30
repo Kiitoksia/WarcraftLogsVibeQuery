@@ -89,7 +89,7 @@ public sealed partial class QueryEngine(
                     {
                         type = "array",
                         items = new { type = "string" },
-                        description = "2-5 short answer choices shown as buttons, e.g. ability names. The user can also type their own reply.",
+                        description = "2-5 short answer choices shown as buttons, e.g. ability names. Don't add an 'other' / 'something else' choice: the user always has a text box to type their own reply.",
                     }),
                 },
                 Required = ["question"],
