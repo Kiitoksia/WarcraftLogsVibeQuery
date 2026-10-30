@@ -33,13 +33,17 @@ public sealed class GlossaryStore
     public GlossaryStore(IOptions<GlossaryOptions> options, ILogger<GlossaryStore> logger)
     {
         _logger = logger;
-        _directory = !string.IsNullOrWhiteSpace(options.Value.Directory)
-            ? options.Value.Directory
+        _directory = ResolveDirectory(options.Value);
+    }
+
+    /// <summary>Where the editable knowledge files (glossary, fight notes) live; see <see cref="GlossaryOptions.Directory"/>.</summary>
+    internal static string ResolveDirectory(GlossaryOptions options) =>
+        !string.IsNullOrWhiteSpace(options.Directory)
+            ? options.Directory
             : Environment.GetEnvironmentVariable("WEBSITE_SITE_NAME") is not null
               && Environment.GetEnvironmentVariable("HOME") is string home
                 ? Path.Combine(home, "data", "wclquery")
                 : Path.Combine(AppContext.BaseDirectory, "App_Data");
-    }
 
     private string TextPath => Path.Combine(_directory, "glossary.md");
     private string MetaPath => Path.Combine(_directory, "glossary.meta.json");

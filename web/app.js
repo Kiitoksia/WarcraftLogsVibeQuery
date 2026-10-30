@@ -34,6 +34,8 @@
     glossaryError: $("glossary-error"), glossaryEdit: $("glossary-edit"), glossaryCancel: $("glossary-cancel"),
     glossarySave: $("glossary-save"), glossaryAi: $("glossary-ai"), glossaryNote: $("glossary-note"),
     glossaryDraft: $("glossary-draft"), glossaryAiStatus: $("glossary-ai-status"), glossaryDraftNote: $("glossary-draft-note"),
+    tabGlossary: $("tab-glossary"), tabNotes: $("tab-notes"), glossaryPane: $("glossary-pane"), notesPane: $("notes-pane"),
+    notesBadge: $("notes-badge"), notesSuggestions: $("notes-suggestions"), notesList: $("notes-list"), notesError: $("notes-error"),
   };
 
   const storage = {
@@ -757,11 +759,13 @@
     els.glossaryError.hidden = true;
     els.glossaryMeta.textContent = "Loading…";
     els.glossaryView.replaceChildren();
+    showKnowledgeTab("glossary");
     els.glossaryDialog.showModal();
     try {
       const res = await api("/api/glossary");
       if (res.status === 401) { els.glossaryDialog.close(); showLogin("Your login expired. Please log in again."); return; }
       showGlossary(await res.json());
+      if (canEditGlossary) loadNotes(); // fills the suggestions badge on the Fight notes tab
     } catch {
       els.glossaryMeta.textContent = "";
       showGlossaryError("Couldn't load the glossary.");
@@ -840,6 +844,163 @@
     }
   }
 
+  // ---- Fight notes -----------------------------------------------------------------
+
+  let notesData = { notes: [], suggestions: [], canEdit: false };
+
+  function showKnowledgeTab(tab) {
+    const notes = tab === "notes";
+    els.tabGlossary.setAttribute("aria-selected", String(!notes));
+    els.tabNotes.setAttribute("aria-selected", String(notes));
+    els.glossaryPane.hidden = notes;
+    els.notesPane.hidden = !notes;
+    if (notes) loadNotes();
+  }
+
+  async function loadNotes() {
+    els.notesError.hidden = true;
+    try {
+      const res = await api("/api/fight-notes");
+      if (res.status === 401) { els.glossaryDialog.close(); showLogin("Your login expired. Please log in again."); return; }
+      notesData = await res.json();
+      renderNotes();
+    } catch {
+      showNotesError("Couldn't load the fight notes.");
+    }
+  }
+
+  function showNotesError(message) {
+    els.notesError.textContent = message;
+    els.notesError.hidden = false;
+  }
+
+  // Journal-style "**Ability** (spell id N)" becomes a Wowhead link, so the notes get tooltips like answers do.
+  function notesMarkdown(text) {
+    const linked = text.replace(/\*\*([^*\n]+)\*\*\s*\(spell id (\d+)\)/g, "[**$1**](https://www.wowhead.com/spell=$2)");
+    return DOMPurify.sanitize(marked.parse(linked));
+  }
+
+  function renderNotes() {
+    const { notes, suggestions, canEdit } = notesData;
+    els.notesBadge.hidden = !suggestions.length;
+    els.notesBadge.textContent = suggestions.length;
+
+    els.notesSuggestions.replaceChildren();
+    els.notesSuggestions.hidden = !(canEdit && suggestions.length);
+    if (canEdit && suggestions.length) {
+      els.notesSuggestions.append(el("h3", "", "Suggested by the AI from questions people answered"));
+      for (const s of suggestions) els.notesSuggestions.append(renderSuggestion(s));
+    }
+
+    els.notesList.replaceChildren();
+    if (!notes.length) {
+      els.notesList.append(el("p", "muted", "No fight notes yet. They're written the first time someone asks about a boss."));
+    }
+    for (const n of notes) els.notesList.append(renderNoteCard(n, canEdit));
+    refreshTooltips();
+  }
+
+  function renderSuggestion(s) {
+    const card = el("div", "suggestion");
+    card.append(el("div", "suggestion-meta", `${s.boss} · from ${s.suggestedBy}'s question, ${new Date(s.createdAt).toLocaleDateString()}`));
+    const text = el("textarea");
+    text.rows = 2;
+    text.maxLength = 400;
+    text.value = s.text;
+    text.setAttribute("aria-label", `Suggested note for ${s.boss}`);
+    const actions = el("div", "suggestion-actions");
+    const dismiss = el("button", "btn ghost", "Dismiss");
+    const approve = el("button", "btn small", "Add to notes");
+    dismiss.type = approve.type = "button";
+    dismiss.onclick = () => suggestionAction(s.id, "dismiss", null, [dismiss, approve]);
+    approve.onclick = () => suggestionAction(s.id, "approve", text.value.trim(), [dismiss, approve]);
+    actions.append(dismiss, approve);
+    card.append(text, actions);
+    return card;
+  }
+
+  async function suggestionAction(id, action, text, buttons) {
+    buttons.forEach((b) => { b.disabled = true; });
+    els.notesError.hidden = true;
+    try {
+      const res = await api(`/api/fight-notes/suggestions/${encodeURIComponent(id)}/${action}`, {
+        method: "POST",
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        showNotesError(data.error || "Couldn't update that suggestion.");
+      }
+      await loadNotes();
+    } catch {
+      showNotesError("Couldn't reach the server.");
+      buttons.forEach((b) => { b.disabled = false; });
+    }
+  }
+
+  function renderNoteCard(n, canEdit) {
+    const card = el("article", "note-card");
+    card.append(el("h3", "", n.zone ? `${n.boss} (${n.zone})` : n.boss));
+    const by = n.source === "journal"
+      ? `Written from the Encounter Journal${n.updatedBy ? ` (rebuilt by ${n.updatedBy})` : ""}`
+      : `Edited by ${n.updatedBy}`;
+    card.append(el("p", "note-meta", `${by} · ${new Date(n.updatedAt).toLocaleString()}`));
+    const view = el("div", "markdown");
+    view.innerHTML = notesMarkdown(n.text);
+    decorateMarkdown(view, []);
+    card.append(view);
+    if (!canEdit) return card;
+
+    const editor = el("textarea", "note-editor");
+    editor.hidden = true;
+    editor.spellcheck = true;
+    editor.setAttribute("aria-label", `Fight notes for ${n.boss}`);
+    const actions = el("div", "note-actions");
+    const rebuild = el("button", "btn ghost", "Rebuild from journal");
+    const edit = el("button", "btn small", "Edit");
+    const cancel = el("button", "btn ghost", "Cancel");
+    const save = el("button", "btn small", "Save");
+    for (const b of [rebuild, edit, cancel, save]) b.type = "button";
+    cancel.hidden = save.hidden = true;
+
+    const setEditing = (editing) => {
+      view.hidden = editing;
+      editor.hidden = !editing;
+      rebuild.hidden = edit.hidden = editing;
+      cancel.hidden = save.hidden = !editing;
+      if (editing) { editor.value = n.text; editor.focus(); }
+    };
+    edit.onclick = () => setEditing(true);
+    cancel.onclick = () => setEditing(false);
+    save.onclick = () => noteRequest(`/api/fight-notes/${n.encounterId}`, "PUT", { text: editor.value }, [save, cancel]);
+    rebuild.onclick = () => {
+      if (!confirm(`Rewrite the ${n.boss} notes from the Encounter Journal? Edits and approved suggestions will be replaced.`)) return;
+      rebuild.textContent = "Rebuilding…";
+      noteRequest(`/api/fight-notes/${n.encounterId}/rebuild`, "POST", {}, [rebuild, edit]);
+    };
+    actions.append(rebuild, edit, cancel, save);
+    card.append(editor, actions);
+    return card;
+  }
+
+  async function noteRequest(path, method, body, buttons) {
+    buttons.forEach((b) => { b.disabled = true; });
+    els.notesError.hidden = true;
+    try {
+      const res = await api(path, { method, body: JSON.stringify(body) });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        showNotesError(data.error || "Couldn't save the fight notes.");
+        buttons.forEach((b) => { b.disabled = false; });
+        return;
+      }
+      await loadNotes();
+    } catch {
+      showNotesError("Couldn't reach the server.");
+      buttons.forEach((b) => { b.disabled = false; });
+    }
+  }
+
   // ---- Wire up ---------------------------------------------------------------------
 
   els.loginBtn.onclick = () => {
@@ -874,6 +1035,8 @@
   els.glossaryCancel.onclick = () => setGlossaryEditing(false);
   els.glossarySave.onclick = saveGlossary;
   els.glossaryDraft.onclick = draftGlossary;
+  els.tabGlossary.onclick = () => showKnowledgeTab("glossary");
+  els.tabNotes.onclick = () => showKnowledgeTab("notes");
 
   init();
 })();

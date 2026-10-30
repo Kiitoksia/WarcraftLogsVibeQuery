@@ -59,6 +59,8 @@ public sealed partial class QueryEngine(
     ConversationStore conversations,
     GlossaryStore glossary,
     EncounterJournal journal,
+    FightNotesStore fightNotes,
+    FightNotesWriter fightNotesWriter,
     ILlmProvider llm,
     IOptions<QueryEngineOptions> options,
     ILogger<QueryEngine> logger)
@@ -66,6 +68,7 @@ public sealed partial class QueryEngine(
     private readonly QueryEngineOptions _options = options.Value;
 
     private const string AskUserTool = "ask_user";
+    private const string SuggestNoteTool = "suggest_fight_note";
 
     private static readonly IReadOnlyList<ToolSpec> AllTools =
     [
@@ -103,6 +106,27 @@ public sealed partial class QueryEngine(
                 },
                 ["required"] = new JsonArray("question"),
             }),
+        new ToolSpec(
+            SuggestNoteTool,
+            """
+            Suggest a line for a boss's fight notes, for the guild's officers to approve. Use it only after the user
+            has answered your ask_user question in a way that settles what an informal name means (an ability or an
+            enemy), so the next person isn't asked again. Skip it when the glossary or fight notes already say it.
+            """,
+            new JsonObject
+            {
+                ["type"] = "object",
+                ["properties"] = new JsonObject
+                {
+                    ["encounter_id"] = new JsonObject { ["type"] = "integer", ["description"] = "The boss's encounter id, from the fight notes headings." },
+                    ["note"] = new JsonObject
+                    {
+                        ["type"] = "string",
+                        ["description"] = "One line in the fight notes' style, e.g. \"pools\" = **Spreading Blight** (spell id 1234567, debuff on players); count applications, not damage.",
+                    },
+                },
+                ["required"] = new JsonArray("encounter_id", "note"),
+            }),
     ];
 
     private const string SystemPrompt = """
@@ -129,17 +153,19 @@ public sealed partial class QueryEngine(
         - Prefer get_table for damage/healing totals, count_events for "how many times / who got hit by X
           the most", and get_events for "who did X / when did X happen".
         - Players describe mechanics informally ("eggs", "pools", "beams", "soak"). First check the guild
-          glossary (at the end of these instructions): if the term is there, use that ability and follow its notes.
-          Otherwise, find candidates: run count_events with group_by ability on DamageTaken (event_type damage) and
-          on Debuffs (event_type applydebuff) for the relevant fight/phase; find_abilities helps when you can guess
-          part of the name; get_encounter_journal says what each ability and add actually does (e.g. which add
-          hatches from an egg, which ability is the pool), which often settles it. Then:
+          glossary and the fight notes (both at the end of these instructions): if the term is there, use that
+          ability and follow its notes. The fight notes summarise the Encounter Journal for each boss in the report,
+          so call get_encounter_journal only for detail they don't cover. Otherwise, find candidates: run
+          count_events with group_by ability on DamageTaken (event_type damage) and on Debuffs (event_type
+          applydebuff) for the relevant fight/phase; find_abilities helps when you can guess part of the name. Then:
           - If exactly one ability's name literally contains the user's term (e.g. "waves" → Caustic Waves),
             use it.
           - Otherwise you MUST call ask_user with the 2-5 most likely candidates as options before
             answering. Don't pick one yourself because it sounds closest: a confident wrong answer is worse
             than a quick question.
           Say which ability you used.
+        - When the user's reply to your question settles what a name means, call suggest_fight_note (in parallel
+          with your next lookups) so officers can add it to the fight notes. Don't mention this in your answer.
         - Enemies get the same treatment. Players use informal names for adds and objects too ("eggs", "the big
           add", "orbs", "snakes"). Check the glossary first; otherwise match against the enemy NPCs in the overview.
           To see which enemies were actually involved, run count_events on DamageDone with group_by target
@@ -190,10 +216,10 @@ public sealed partial class QueryEngine(
     public string ProviderName => llm.Name;
 
     /// <summary>Starts a new conversation with the user's first question.</summary>
-    public Task<QueryResult> AskAsync(string userId, string reportCode, string question, int? fightHint,
+    public Task<QueryResult> AskAsync(string userId, string userName, string reportCode, string question, int? fightHint,
         QuerySettings settings, CancellationToken ct)
     {
-        var conversation = conversations.Create(userId, reportCode, llm.CreateSession());
+        var conversation = conversations.Create(userId, userName, reportCode, llm.CreateSession());
         var text = fightHint is int f ? $"(The user is looking at fight {f} in the report.)\n\n{question}" : question;
         return RunTurnAsync(conversation, text, settings, ct);
     }
@@ -227,6 +253,7 @@ public sealed partial class QueryEngine(
                 conv.Session.AddToolResults(results);
                 conv.PendingQuestionToolCallId = null;
                 conv.PendingToolResults.Clear();
+                conv.HasClarification = true;
             }
             else
             {
@@ -252,12 +279,14 @@ public sealed partial class QueryEngine(
         // The glossary is officer-maintained (editable from the site), so read it fresh each turn.
         // It goes last so the fixed instructions before it stay cacheable.
         var glossaryText = glossary.Get().Text.Trim();
+        var (notesText, bosses) = await FightNotesAsync(conv.ReportCode, usage, ct);
         string[] system =
         [
             SystemPrompt,
             glossaryText.Length > 0
                 ? "Guild glossary (written by the guild's officers; trust it over your own guesses):\n\n" + glossaryText
                 : "Guild glossary: (empty)",
+            notesText,
         ];
 
         async Task<QueryResult> Result(string status, string? answer, string? question = null, IReadOnlyList<AskOption>? options = null) =>
@@ -288,6 +317,10 @@ public sealed partial class QueryEngine(
                 {
                     toolResults.Add(new(call.Id, "Error: only one question at a time.", IsError: true));
                 }
+                else if (call.Name == SuggestNoteTool)
+                {
+                    toolResults.Add(SuggestNote(conv, call, bosses, traces));
+                }
                 else
                 {
                     toolResults.Add(await RunToolAsync(tools, call, traces, charts, links, ct));
@@ -317,7 +350,67 @@ public sealed partial class QueryEngine(
         return await Result("answer", "No answer was produced.");
     }
 
-    private static readonly string[] DataTools = ["get_table", "get_events", "count_events", "show_chart", "get_pull_timeline"];
+    /// <summary>
+    /// The fight notes for every boss in the report, as a system prompt block. Notes for a boss nobody has asked
+    /// about yet are written from the Encounter Journal on the spot (once; their tokens count toward this turn).
+    /// Also returns the report's bosses, which suggest_fight_note checks against.
+    /// </summary>
+    private async Task<(string Text, IReadOnlyDictionary<int, string> Bosses)> FightNotesAsync(
+        string reportCode, TokenUsage.Accumulator usage, CancellationToken ct)
+    {
+        Report report;
+        try { report = await wcl.GetReportAsync(reportCode, ct); } // cached
+        catch (WarcraftLogsException) { return ("Fight notes: (the report couldn't be loaded)", new Dictionary<int, string>()); }
+
+        var bosses = report.Fights.Where(f => f.IsBoss)
+            .GroupBy(f => f.EncounterId)
+            .ToDictionary(g => g.Key, g => g.First().Name);
+        var notes = await Task.WhenAll(bosses.Select(async b =>
+        {
+            try
+            {
+                var (note, used) = await fightNotesWriter.EnsureAsync(b.Key, b.Value, report.Zone?.Name, ct);
+                return (Id: b.Key, Boss: b.Value, Note: note, Used: used);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogError(ex, "Couldn't write fight notes for {Boss}", b.Value);
+                return (Id: b.Key, Boss: b.Value, Note: (FightNote?)null, Used: (LlmUsage?)null);
+            }
+        }));
+
+        var sb = new System.Text.StringBuilder(
+            "Fight notes (one section per boss in this report: the Encounter Journal condensed, plus what officers " +
+            "have added; the glossary wins if they disagree):\n");
+        foreach (var n in notes)
+        {
+            if (n.Used is { } u) usage.Add(u);
+            sb.Append($"\n## {n.Boss} (encounter_id {n.Id})\n");
+            sb.Append(n.Note is { } note ? note.Text.Trim() : "(no notes yet)").Append('\n');
+        }
+        if (bosses.Count == 0) sb.Append("\n(no boss fights in this report)\n");
+        return (sb.ToString(), bosses);
+    }
+
+    private LlmToolResult SuggestNote(Conversation conv, LlmToolCall call, IReadOnlyDictionary<int, string> bosses,
+        List<ToolCallTrace> traces)
+    {
+        traces.Add(new(call.Name, JsonSerializer.Serialize(call.Input), null, 0));
+        if (!conv.HasClarification)
+            return new(call.Id, "Error: only suggest a note after the user has answered your question.", IsError: true);
+        if (!call.Input.TryGetValue("encounter_id", out var e) || !e.TryGetInt32(out var encounterId)
+            || !bosses.TryGetValue(encounterId, out var boss))
+            return new(call.Id, "Error: encounter_id must be one of the bosses in the fight notes.", IsError: true);
+        if (!call.Input.TryGetValue("note", out var n) || n.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(n.GetString()))
+            return new(call.Id, "Error: note is required.", IsError: true);
+
+        var suggestion = fightNotes.Suggest(encounterId, boss, n.GetString()!, conv.UserName);
+        return new(call.Id, suggestion is null
+            ? "Not saved (already suggested, or too long). Carry on with the answer."
+            : "Saved for the officers to review. Carry on with the answer; don't mention this.");
+    }
+
+    private static readonly string[] DataTools =["get_table", "get_events", "count_events", "show_chart", "get_pull_timeline"];
 
     /// <summary>
     /// Describes what the data lookups covered, e.g. "All 29 pulls · Phase 1" or "Pull 29", from the tool inputs

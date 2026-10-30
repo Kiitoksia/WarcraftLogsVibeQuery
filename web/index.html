@@ -99,9 +99,20 @@
 
   <dialog id="glossary-dialog" class="glossary-dialog">
     <div class="dialog-head">
-      <h2>Guild glossary</h2>
+      <h2>Guild knowledge</h2>
       <button id="glossary-close" class="btn ghost" type="button" aria-label="Close">✕</button>
     </div>
+    <div class="dialog-tabs" role="tablist">
+      <button id="tab-glossary" class="dialog-tab" type="button" role="tab" aria-selected="true">Glossary</button>
+      <button id="tab-notes" class="dialog-tab" type="button" role="tab" aria-selected="false">Fight notes <span id="notes-badge" class="badge" hidden></span></button>
+    </div>
+    <div id="notes-pane" hidden>
+      <p class="muted">What the AI knows about each boss: written once from the in-game Encounter Journal the first time someone asks about that boss, plus anything editors add. The AI reads the notes for the bosses in your report before every question.</p>
+      <div id="notes-suggestions" class="notes-suggestions" hidden></div>
+      <div id="notes-list" class="notes-list"></div>
+      <p id="notes-error" class="error" hidden></p>
+    </div>
+    <div id="glossary-pane">
     <p class="muted">What the guild's names for mechanics mean. The AI reads this before every question.</p>
     <p id="glossary-meta" class="muted"></p>
     <div id="glossary-ai" class="glossary-ai" hidden>
@@ -120,6 +131,7 @@
       <button id="glossary-edit" class="btn small" type="button" hidden>Edit</button>
       <button id="glossary-cancel" class="btn ghost" type="button" hidden>Cancel</button>
       <button id="glossary-save" class="btn small" type="button" hidden>Save</button>
+    </div>
     </div>
   </dialog>
 

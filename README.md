@@ -120,6 +120,17 @@ in-game Encounter Journal for a boss (`get_encounter_journal`): what each abilit
 demand to work out informal terms (e.g. "eggs" = Blightscale Spawn). Order of trust: the log for what happened,
 then the guild glossary, then the journal. Entries are cached for a day.
 
+## Fight notes
+
+The first time anyone asks about a boss, the AI condenses its journal entry into short fight notes (adds, their
+likely nicknames, key abilities by phase with spell ids) and saves them next to the glossary
+(`fight-notes.json`, with history). From then on the notes for every boss in the report go into the instructions,
+so questions rarely need the journal lookup, and the fixed text caches well.
+
+When a user answers a clarifying question ("pools" → Toxic Burn), the AI files a suggested note
+(`suggest_fight_note`). Glossary editors approve, edit or dismiss suggestions, edit notes, or rebuild them from
+the journal under **Glossary → Fight notes**. Nothing the AI learns is used until an editor approves it.
+
 ## Filters
 
 The site's Filters panel applies to every lookup Claude makes, for example "Ignore events after N player

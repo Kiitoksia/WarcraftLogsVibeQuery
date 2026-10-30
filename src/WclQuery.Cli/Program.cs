@@ -93,7 +93,7 @@ switch (command)
         // Each extra argument answers Claude's clarifying question, or is sent as a follow-up.
         var (code, fight) = QueryEngine.ParseReport(args[1]) ?? throw new ArgumentException("Bad report code/URL.");
         var engine = host.Services.GetRequiredService<QueryEngine>();
-        var result = await engine.AskAsync("cli", code, args[2], fight, settings, default);
+        var result = await engine.AskAsync("cli", "cli", code, args[2], fight, settings, default);
         Print(result);
         foreach (var reply in args.Skip(3))
         {

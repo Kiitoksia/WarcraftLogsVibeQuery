@@ -189,6 +189,77 @@ app.MapPost("/api/glossary/draft", async (GlossaryDraftRequest req, DiscordAuth 
     }
 }).RequireRateLimiting("ask");
 
+// ---- Fight notes (per boss, written once from the Encounter Journal; same editors as the glossary) -------------
+
+IResult NotEditor() =>
+    Results.Json(new { error = "Only officers and listed glossary editors can edit fight notes." }, statusCode: StatusCodes.Status403Forbidden);
+
+app.MapGet("/api/fight-notes", (DiscordAuth auth, FightNotesStore notes, HttpContext ctx) =>
+{
+    if (auth.GetUser(ctx) is not { } user) return Results.Unauthorized();
+    return Results.Ok(new
+    {
+        notes = notes.All(),
+        suggestions = user.CanEditGlossary ? notes.Suggestions() : [],
+        canEdit = user.CanEditGlossary,
+    });
+});
+
+app.MapPut("/api/fight-notes/{encounterId:int}", (int encounterId, GlossaryUpdate req, DiscordAuth auth,
+    FightNotesStore notes, HttpContext ctx) =>
+{
+    if (auth.GetUser(ctx) is not { } user) return Results.Unauthorized();
+    if (!user.CanEditGlossary) return NotEditor();
+    if (notes.Get(encounterId) is not { } existing) return Results.NotFound(new { error = "No notes for that boss." });
+    if (string.IsNullOrWhiteSpace(req.Text) || req.Text.Length > FightNotesStore.MaxNoteLength)
+        return Results.BadRequest(new { error = $"Fight notes can be up to {FightNotesStore.MaxNoteLength:N0} characters." });
+    return Results.Ok(notes.Save(encounterId, existing.Boss, existing.Zone, req.Text, "edited", user.Name));
+});
+
+// Rewrites a boss's notes from the Encounter Journal (e.g. after Blizzard changes the fight). Replaces edits.
+app.MapPost("/api/fight-notes/{encounterId:int}/rebuild", async (int encounterId, DiscordAuth auth, FightNotesStore notes,
+    FightNotesWriter writer, HttpContext ctx, ILogger<Program> logger, CancellationToken ct) =>
+{
+    if (auth.GetUser(ctx) is not { } user) return Results.Unauthorized();
+    if (!user.CanEditGlossary) return NotEditor();
+    if (notes.Get(encounterId) is not { } existing) return Results.NotFound(new { error = "No notes for that boss." });
+    try
+    {
+        var (note, _) = await writer.WriteAsync(encounterId, existing.Boss, existing.Zone, user.Name, ct);
+        return Results.Ok(note);
+    }
+    catch (Exception ex) when (ex is EncounterJournalException or InvalidOperationException)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+    catch (Exception ex) when (IsModelServiceError(ex))
+    {
+        logger.LogError(ex, "Model API call failed while rebuilding fight notes");
+        return Results.Json(new { error = "The AI service is unavailable right now. Try again shortly." },
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+}).RequireRateLimiting("ask");
+
+app.MapPost("/api/fight-notes/suggestions/{id}/approve", (string id, GlossaryUpdate req, DiscordAuth auth,
+    FightNotesStore notes, HttpContext ctx) =>
+{
+    if (auth.GetUser(ctx) is not { } user) return Results.Unauthorized();
+    if (!user.CanEditGlossary) return NotEditor();
+    if (req.Text is { Length: > FightNotesStore.MaxSuggestionLength })
+        return Results.BadRequest(new { error = $"A note line can be up to {FightNotesStore.MaxSuggestionLength} characters." });
+    return notes.Approve(id, req.Text, user.Name) is { } note
+        ? Results.Ok(note)
+        : Results.NotFound(new { error = "That suggestion has already been handled." });
+});
+
+app.MapPost("/api/fight-notes/suggestions/{id}/dismiss", (string id, DiscordAuth auth, FightNotesStore notes, HttpContext ctx) =>
+{
+    if (auth.GetUser(ctx) is not { } user) return Results.Unauthorized();
+    if (!user.CanEditGlossary) return NotEditor();
+    notes.Dismiss(id);
+    return Results.NoContent();
+});
+
 // ---- Questions ----------------------------------------------------------------
 
 app.MapPost("/api/ask", async (AskRequest req, DiscordAuth auth, QueryEngine engine, HttpContext ctx,
@@ -206,7 +277,7 @@ app.MapPost("/api/ask", async (AskRequest req, DiscordAuth auth, QueryEngine eng
         return Results.BadRequest(new { error = "Invalid settings: the death cutoff must be 1-30 and the pull a valid fight." });
 
     logger.LogInformation("{User} asked about {Report}: {Question}", user.Name, code, req.Question);
-    return await RunAsync(() => engine.AskAsync(user.Id, code, req.Question.Trim(), req.Fight ?? fight, settings, ct), logger);
+    return await RunAsync(() => engine.AskAsync(user.Id, user.Name, code, req.Question.Trim(), req.Fight ?? fight, settings, ct), logger);
 }).RequireRateLimiting("ask");
 
 // Answers Claude's clarifying question, or asks a follow-up in the same conversation.
