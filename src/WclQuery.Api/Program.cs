@@ -181,8 +181,10 @@ static async Task<IResult> RunAsync(Func<Task<QueryResult>> run, ILogger logger)
     try
     {
         var result = await run();
-        logger.LogInformation("{Status} with {Tools} tool calls, {In} in / {Out} out tokens",
-            result.Status, result.ToolCalls.Count, result.InputTokens, result.OutputTokens);
+        var u = result.Usage;
+        logger.LogInformation(
+            "{Status} with {Tools} tool calls. Tokens: {Input} input + {CacheRead} cache read + {CacheWrite} cache write, {Output} output. Est. cost ${Cost}",
+            result.Status, result.ToolCalls.Count, u.Input, u.CacheRead, u.CacheWrite, u.Output, u.EstimatedCostUsd?.ToString("0.0000") ?? "?");
         return Results.Ok(result);
     }
     catch (Exception ex) when (ex is WarcraftLogsException or ConversationNotFoundException)

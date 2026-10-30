@@ -20,6 +20,8 @@ public sealed class QueryEngineOptions
     public string Effort { get; set; } = "medium";
     /// <summary>Tool rounds allowed per user message.</summary>
     public int MaxToolRounds { get; set; } = 12;
+    /// <summary>Prompt-cache the conversation between rounds (the system prompt is always cached).</summary>
+    public bool CacheConversation { get; set; } = true;
 }
 
 public sealed record ToolCallTrace(string Name, string Input, string? Error, long ElapsedMs);
@@ -41,8 +43,7 @@ public sealed record QueryResult(
     IReadOnlyList<WclLink> Links,
     IReadOnlyList<PlayerInfo> Players,
     IReadOnlyList<ToolCallTrace> ToolCalls,
-    long InputTokens,
-    long OutputTokens);
+    TokenUsage Usage);
 
 public sealed class ConversationNotFoundException() : Exception("That conversation has expired. Ask your question again.");
 
@@ -219,7 +220,7 @@ public sealed partial class QueryEngine(
         var traces = new List<ToolCallTrace>();
         var charts = new List<ChartData>();
         var links = new List<WclLink>();
-        long inTokens = 0, outTokens = 0;
+        var usage = new TokenUsage.Accumulator(_options.Model);
 
         var glossaryText = glossary.Get().Text.Trim();
         var glossaryBlock = glossaryText.Length > 0
@@ -228,13 +229,13 @@ public sealed partial class QueryEngine(
 
         async Task<QueryResult> Result(string status, string? answer, string? question = null, IReadOnlyList<string>? options = null) =>
             new(conv.Id, status, answer, question, options ?? [], charts,
-                [.. links.DistinctBy(l => l.Url).Take(4)], await PlayersAsync(conv.ReportCode, ct), traces, inTokens, outTokens);
+                [.. links.DistinctBy(l => l.Url).Take(4)], await PlayersAsync(conv.ReportCode, ct), traces, usage.ToUsage());
 
         // The last round withholds tools so Claude answers with what it has instead of giving up.
         for (var round = 0; round <= _options.MaxToolRounds; round++)
         {
             var finalRound = round == _options.MaxToolRounds;
-            var response = await _claude.Messages.Create(new MessageCreateParams
+            var request = new MessageCreateParams
             {
                 Model = _options.Model,
                 MaxTokens = 16000,
@@ -248,10 +249,14 @@ public sealed partial class QueryEngine(
                 Tools = [.. AllTools],
                 ToolChoice = finalRound ? new ToolChoiceNone() : new ToolChoiceAuto(),
                 Messages = conv.Messages,
-            }, ct);
+            };
+            // Cache the conversation so far: each round resends the whole history, and cached tokens are
+            // far cheaper than normal input. Only set when on: an explicit null would be sent to the API.
+            if (_options.CacheConversation)
+                request = request with { CacheControl = new CacheControlEphemeral() };
+            var response = await _claude.Messages.Create(request, ct);
 
-            inTokens += response.Usage.InputTokens;
-            outTokens += response.Usage.OutputTokens;
+            usage.Add(response.Usage);
 
             if (response.StopReason == "refusal")
                 return await Result("answer", "Sorry, I can't answer that one.");

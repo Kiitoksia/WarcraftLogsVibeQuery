@@ -123,7 +123,9 @@ static void Print(QueryResult result)
         Console.WriteLine($"[chart] {c.Title} ({c.Metric}, {c.Series.Count} series)");
     foreach (var l in result.Links)
         Console.WriteLine($"[link] {l.Label}: {l.Url}");
-    Console.WriteLine($"[tokens] {result.InputTokens} in / {result.OutputTokens} out\n");
+    var u = result.Usage;
+    Console.WriteLine($"[tokens] {u.Input} in + {u.CacheRead} cache read + {u.CacheWrite} cache write / {u.Output} out" +
+        $" (total input {u.TotalInput}) ≈ ${u.EstimatedCostUsd?.ToString("0.0000") ?? "?"}\n");
     if (result.Answer is not null) Console.WriteLine(result.Answer);
     if (result.Status == "question")
         Console.WriteLine($"\n[QUESTION] {result.Question}\n[OPTIONS] {string.Join(" | ", result.Options)}");

@@ -88,6 +88,18 @@ Set these environment variables there (double underscore = nested setting):
 Secrets and variables → Actions → **Variables** → add `API_BASE_URL` (e.g. `https://wclq-api.azurewebsites.net`).
 Pushing changes under `web/` redeploys.
 
+## Costs
+
+Every answer shows its token count and estimated cost under "How I found this", and the API logs the
+same per question (input, cache reads, cache writes, output). To spend less:
+
+- **Model** (`Claude__Model`): `claude-opus-5-5` (best), `claude-sonnet-5-5` (half the price),
+  `claude-haiku-5-5` (about 40× cheaper than Opus; fine for simple lookups). No deploy needed; change the
+  Azure setting.
+- **Effort** (`Claude__Effort`): `low` thinks less and costs less.
+- The conversation is prompt-cached between lookup rounds, so resent history costs a tenth of normal.
+  Tool results are trimmed (`ReportTools.Prune`, `MaxResultChars`) because they're resent every round.
+
 ## Guild glossary
 
 The glossary tells Claude what the guild's informal names mean, e.g. "eggs" = Rancid Yolk on Ula'tek.

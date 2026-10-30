@@ -14,7 +14,7 @@ namespace WclQuery.Core.Engine;
 /// </summary>
 public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, QuerySettings settings)
 {
-    private const int MaxResultChars = 20_000;
+    private const int MaxResultChars = 12_000;
 
     private static readonly string[] EventDataTypes =
         ["All", "Buffs", "Casts", "CombatantInfo", "DamageDone", "DamageTaken", "Deaths", "Debuffs",
@@ -83,17 +83,33 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
             sb.AppendLine($"  {a.Id} | {a.Name} | {a.SubType}");
 
         sb.AppendLine();
-        sb.AppendLine("Enemy NPCs in boss fights (actor id | name | game id | fights with instance counts):");
+        sb.AppendLine("Enemy NPCs in boss fights (actor id | name | game id | fights | spawns per pull):");
         var npcFights = report.Fights.Where(f => f.IsBoss)
             .SelectMany(f => f.EnemyNpcs.Select(n => (Npc: n, Fight: f)))
             .GroupBy(x => x.Npc.Id);
         foreach (var g in npcFights)
         {
             var actor = report.ActorsById.GetValueOrDefault(g.Key);
-            var fights = string.Join(", ", g.Select(x => $"{x.Fight.Id}×{x.Npc.InstanceCount}"));
-            sb.AppendLine($"  {g.Key} | {actor?.Name ?? "?"} | {actor?.GameId} | {fights}");
+            var min = g.Min(x => x.Npc.InstanceCount);
+            var max = g.Max(x => x.Npc.InstanceCount);
+            var spawns = min == max ? $"{min}" : $"{min}–{max}";
+            sb.AppendLine($"  {g.Key} | {actor?.Name ?? "?"} | {actor?.GameId} | {FormatRanges(g.Select(x => x.Fight.Id))} | {spawns}");
         }
         return sb.ToString();
+    }
+
+    /// <summary>"1, 2, 3, 5, 6, 9" → "1–3, 5–6, 9" (keeps the overview short; it's resent every round).</summary>
+    private static string FormatRanges(IEnumerable<int> ids)
+    {
+        var sorted = ids.Distinct().Order().ToList();
+        var parts = new List<string>();
+        for (var i = 0; i < sorted.Count; i++)
+        {
+            var start = sorted[i];
+            while (i + 1 < sorted.Count && sorted[i + 1] == sorted[i] + 1) i++;
+            parts.Add(start == sorted[i] ? $"{start}" : $"{start}–{sorted[i]}");
+        }
+        return string.Join(", ", parts);
     }
 
     // ---- find_abilities ------------------------------------------------------
@@ -351,7 +367,7 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
     private async Task<string> EventsAsync(Report report, ToolArgs args, CancellationToken ct)
     {
         var q = BuildQuery(report, args, EventDataTypes);
-        var limit = Math.Clamp(args.OptionalInt("limit") ?? 200, 1, 500);
+        var limit = Math.Clamp(args.OptionalInt("limit") ?? 100, 1, 500);
         var page = await wcl.GetEventsAsync(reportCode, q, limit, ct);
 
         var origin = SingleFightOrigin(report, q);
@@ -622,11 +638,15 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
 
     private static string Instance(JsonElement e, string key) => GetInt(e, key) is int i and > 0 ? $" #{i}" : "";
 
+    // Pets are already included in their owner's total, so their breakdown is mostly noise for Claude.
     private static readonly HashSet<string> PrunedTableKeys =
         ["icon", "guid", "gear", "talents", "talentTree", "specs", "composition", "logVersion", "gameVersion",
-         "itemLevel", "totalReduced", "activeTimeReduced", "damageAbilities", "exploitDetails"];
+         "itemLevel", "totalReduced", "activeTimeReduced", "damageAbilities", "exploitDetails", "pets", "petName"];
 
-    /// <summary>Drops cosmetic keys and caps array lengths so table JSON stays small.</summary>
+    /// <summary>
+    /// Drops cosmetic keys and caps array lengths so table JSON stays small: up to 40 top-level rows
+    /// (players), and only the top 3 of each player's nested lists (abilities, targets).
+    /// </summary>
     private static JsonNode? Prune(JsonNode? node, int depth)
     {
         switch (node)
@@ -637,7 +657,7 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
                     if (!PrunedTableKeys.Contains(k)) copy[k] = Prune(v, depth + 1);
                 return copy;
             case JsonArray arr:
-                var max = depth <= 3 ? 40 : 10;
+                var max = depth <= 3 ? 40 : 3;
                 var list = new JsonArray();
                 foreach (var item in arr.Take(max)) list.Add(Prune(item, depth + 1));
                 if (arr.Count > max) list.Add($"…{arr.Count - max} more");
@@ -735,7 +755,7 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
                 {
                     Properties = With(
                         ("data_type", Prop(new { type = "string", @enum = EventDataTypes })),
-                        ("limit", Prop(new { type = "integer", description = "Max events to return (default 200, max 500)." }))),
+                        ("limit", Prop(new { type = "integer", description = "Max events to return (default 100, max 500). Prefer filters or count_events over large limits." }))),
                     Required = ["data_type"],
                 },
             },

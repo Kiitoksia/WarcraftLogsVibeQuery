@@ -370,7 +370,7 @@
         block.append(links);
       }
 
-      if (data.toolCalls?.length) block.append(renderTrace(data.toolCalls));
+      if (data.toolCalls?.length) block.append(renderTrace(data.toolCalls, data.usage));
       this.log.append(block);
       refreshTooltips();
       if (data.status === "question") this.replyInput.focus({ preventScroll: true });
@@ -386,9 +386,15 @@
     }
   }
 
-  function renderTrace(calls) {
+  function renderTrace(calls, usage) {
     const details = el("details", "trace");
-    details.append(el("summary", "", `How I found this (${calls.length} lookup${calls.length === 1 ? "" : "s"})`));
+    let summary = `How I found this (${calls.length} lookup${calls.length === 1 ? "" : "s"})`;
+    if (usage) {
+      const tokens = usage.input + usage.cacheRead + usage.cacheWrite + usage.output;
+      summary += ` · ${(tokens / 1000).toFixed(1)}k tokens`;
+      if (usage.estimatedCostUsd != null) summary += ` · ≈$${usage.estimatedCostUsd.toFixed(3)}`;
+    }
+    details.append(el("summary", "", summary));
     const list = el("ol");
     for (const c of calls) {
       const li = el("li");
