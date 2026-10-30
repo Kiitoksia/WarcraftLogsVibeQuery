@@ -1,0 +1,20 @@
+# Prompts for the API's secrets and stores them in .NET user-secrets (outside the repo).
+# Run from anywhere:  powershell -ExecutionPolicy Bypass -File scripts\set-secrets.ps1
+$project = Join-Path $PSScriptRoot "..\src\WclQuery.Api"
+
+function Read-Secret([string]$prompt) {
+    $secure = Read-Host -Prompt $prompt -AsSecureString
+    [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
+}
+
+$values = [ordered]@{
+    "WarcraftLogs:ClientId"     = Read-Host -Prompt "Warcraft Logs client ID"
+    "WarcraftLogs:ClientSecret" = Read-Secret "Warcraft Logs client secret"
+    "Claude:ApiKey"             = Read-Secret "Anthropic API key (leave blank to skip)"
+}
+
+foreach ($key in $values.Keys) {
+    if ([string]::IsNullOrWhiteSpace($values[$key])) { Write-Host "Skipped $key"; continue }
+    dotnet user-secrets set $key $values[$key] --project $project | Out-Null
+    Write-Host "Saved $key"
+}

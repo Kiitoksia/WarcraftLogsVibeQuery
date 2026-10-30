@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log Oracle</title>
+  <meta name="description" content="Ask plain-English questions about a Warcraft Logs report.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">◆</span>
+      <h1>Log Oracle</h1>
+    </div>
+    <div id="user-area" class="user-area"></div>
+  </header>
+
+  <main>
+    <section id="login-panel" class="panel center" hidden>
+      <h2>Raiders only</h2>
+      <p>Log in with Discord. You need the raider role in the guild server.</p>
+      <button id="login-btn" class="btn primary">Log in with Discord</button>
+      <p id="auth-error" class="error" hidden></p>
+    </section>
+
+    <section id="ask-panel" class="panel" hidden>
+      <label for="report" class="field-label">Warcraft Logs report</label>
+      <input id="report" type="text" placeholder="https://www.warcraftlogs.com/reports/AbCdEf123456#fight=12" autocomplete="off" spellcheck="false">
+
+      <label for="question" class="field-label">Your question</label>
+      <textarea id="question" rows="3" maxlength="500" placeholder="Who did the most damage to the adds between 1:30 and 2:00 on the last pull?"></textarea>
+
+      <div class="chips" id="examples"></div>
+
+      <div class="actions">
+        <span id="char-count" class="muted">0 / 500</span>
+        <button id="ask-btn" class="btn primary">Ask</button>
+      </div>
+    </section>
+
+    <section id="results" aria-live="polite"></section>
+  </main>
+
+  <template id="result-template">
+    <article class="panel result">
+      <p class="result-question"></p>
+      <div class="result-body"></div>
+      <details class="trace" hidden>
+        <summary></summary>
+        <ol></ol>
+      </details>
+    </article>
+  </template>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
