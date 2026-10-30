@@ -24,7 +24,8 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
         ["Summary", "Buffs", "Casts", "DamageDone", "DamageTaken", "Deaths", "Debuffs", "Dispels",
          "Healing", "Interrupts", "Resources", "Summons", "Survivability", "Threat"];
 
-    private static readonly string[] ChartDataTypes = ["DamageDone", "DamageTaken", "Healing"];
+    private static readonly string[] ChartDataTypes =
+        ["DamageDone", "DamageTaken", "Healing", "Casts", "Buffs", "Debuffs", "Deaths", "Interrupts", "Dispels"];
 
     // Must stay below the arrays above: static initializers run in declaration order.
     public static IReadOnlyList<ToolUnion> Definitions { get; } = BuildDefinitions();
@@ -124,13 +125,43 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
 
     // ---- show_chart ----------------------------------------------------------
 
+    // Which side of each event is "the player" in a ranking, per data type.
+    private static readonly HashSet<string> TargetSideTypes = ["DamageTaken", "Debuffs", "Buffs", "Deaths"];
+
+    // The event type that represents one occurrence for each data type (so removes/refreshes aren't counted).
+    private static readonly Dictionary<string, string> DefaultEventTypes = new()
+    {
+        ["DamageDone"] = "damage", ["DamageTaken"] = "damage", ["Healing"] = "heal", ["Casts"] = "cast",
+        ["Debuffs"] = "applydebuff", ["Buffs"] = "applybuff", ["Deaths"] = "death",
+        ["Interrupts"] = "interrupt", ["Dispels"] = "dispel",
+    };
+
     private async Task<ToolOutput> ChartAsync(Report report, ToolArgs args, CancellationToken ct)
     {
-        if (args.OptionalInt("fight_id") is null)
-            throw new ToolInputException("show_chart needs a single fight_id (a timeline can't span several pulls).");
         var q = BuildQuery(report, args, ChartDataTypes);
+        if (q.FightIds is null or { Count: 0 })
+            throw new ToolInputException("show_chart needs fight_id, fight_ids or all_boss_pulls.");
+
+        var measure = args.OptionalString("measure")
+            ?? (q.DataType is "DamageDone" or "DamageTaken" or "Healing" ? "amount" : "count");
+        if (measure is not ("amount" or "count")) throw new ToolInputException("measure must be amount or count.");
+        var eventType = args.OptionalString("event_type");
+        if (eventType is not null && !eventType.All(char.IsAsciiLetterLower))
+            throw new ToolInputException("event_type must be a lowercase event type such as damage, applydebuff, cast.");
+
+        // A single pull measured in damage/healing uses Warcraft Logs' own per-second graph (smoothest);
+        // everything else (counts, several pulls) is built from the raw events.
+        if (q.FightIds.Count == 1 && measure == "amount" && eventType is null
+            && q.DataType is "DamageDone" or "DamageTaken" or "Healing")
+            return await GraphChartAsync(report, args, q, ct);
+        return await EventChartAsync(report, args, q, measure, eventType, ct);
+    }
+
+    private async Task<ToolOutput> GraphChartAsync(Report report, ToolArgs args, ReportQuery q, CancellationToken ct)
+    {
         var fight = report.GetFight(q.FightIds![0])!;
         var title = args.OptionalString("title") ?? $"{q.DataType} — {fight.Name} (fight {fight.Id})";
+        var durationSec = (q.EndTime - q.StartTime) / 1000.0;
 
         var graph = await wcl.GetGraphAsync(reportCode, q, ct);
         var series = new List<ChartSeries>();
@@ -141,13 +172,14 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
             pointStart = s["pointStart"]?.GetValue<double>() ?? pointStart;
             interval = s["pointInterval"]?.GetValue<double>() ?? interval;
             var points = s["data"]?.AsArray().Select(p => Math.Round(p?.GetValue<double>() ?? 0, 1)).ToList() ?? [];
+            var total = s["total"]?.GetValue<double>() ?? 0;
             series.Add(new ChartSeries(
                 s["name"]?.GetValue<string>() ?? "?",
                 s["type"]?.GetValue<string>() ?? "",
-                s["total"]?.GetValue<double>() ?? 0,
+                total,
+                Math.Round(total / Math.Max(1, durationSec), 1),
                 points));
         }
-        if (series.Count == 0) return new ToolOutput("No data for that chart (nothing matched the filters).");
 
         // Warcraft Logs adds its own (empty) "Total" series; the site draws a total line itself.
         series = [.. series.Where(s => s.Name != "Total" && s.Total > 0).OrderByDescending(s => s.Total).Take(30)];
@@ -155,20 +187,130 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
         var metric = q.DataType switch { "Healing" => "HPS", "DamageTaken" => "DTPS", _ => "DPS" };
         var link = LinkFor(report, q);
         var chart = new ChartData(
-            title,
-            metric,
+            title, "timeline", metric,
+            TotalLabel: q.DataType switch { "Healing" => "Healing", "DamageTaken" => "Damage taken", _ => "Damage" },
+            SecondaryLabel: metric,
             StartSec: (pointStart - fight.StartTime) / 1000,
             IntervalSec: interval / 1000,
-            DurationSec: (q.EndTime - q.StartTime) / 1000.0,
+            DurationSec: durationSec,
+            XLabels: null,
             series,
             link);
+        return ChartOutput(report, q, chart);
+    }
 
+    /// <summary>
+    /// Builds a chart from raw events: per time bucket for one pull, or per pull for several. Works for counts
+    /// (hits, debuffs, casts, deaths…) as well as amounts. Pets are folded into their owners; only players are ranked.
+    /// </summary>
+    private async Task<ToolOutput> EventChartAsync(Report report, ToolArgs args, ReportQuery q, string measure,
+        string? eventType, CancellationToken ct)
+    {
+        eventType ??= DefaultEventTypes.GetValueOrDefault(q.DataType);
+        if (eventType is not null)
+            q = q with { FilterExpression = CombineFilters(q.FilterExpression, $"type = \"{eventType}\"") };
+
+        var side = args.OptionalString("group_by") ?? (TargetSideTypes.Contains(q.DataType) ? "target" : "source");
+        if (side is not ("source" or "target")) throw new ToolInputException("For show_chart, group_by must be source or target.");
+
+        var page = await wcl.GetEventsAsync(reportCode, q, MaxCountedEvents, ct);
+        if (page.Data.Count >= MaxCountedEvents)
+            throw new ToolInputException($"Too many events (over {MaxCountedEvents:N0}) for this chart. Narrow it with ability_id, target_id, phase or fewer pulls.");
+
+        var fights = q.FightIds!.Select(id => report.GetFight(id)!).OrderBy(f => f.StartTime).ToList();
+        var perPull = fights.Count > 1;
+        var fight = fights[0];
+        var durationSec = (q.EndTime - q.StartTime) / 1000.0;
+        var bucketSec = perPull ? 0 : Math.Clamp(Math.Round(durationSec / 60), 1, 10);
+        var slotCount = perPull ? fights.Count : (int)Math.Ceiling(durationSec / bucketSec);
+        var fightSlot = fights.Select((f, i) => (f.Id, i)).ToDictionary(x => x.Id, x => x.i);
+
+        // Player each event belongs to (pets count for their owner); null for NPCs.
+        Actor? PlayerFor(int? id)
+        {
+            if (id is not int i || !report.ActorsById.TryGetValue(i, out var actor)) return null;
+            if (actor.PetOwner is int owner && report.ActorsById.TryGetValue(owner, out var o)) actor = o;
+            return actor.Type == "Player" ? actor : null;
+        }
+
+        var values = new Dictionary<int, double[]>();
+        foreach (var e in page.Data)
+        {
+            if (eventType is not null && GetString(e, "type") != eventType) continue;
+            if (PlayerFor(GetInt(e, side == "target" ? "targetID" : "sourceID")) is not { } player) continue;
+
+            int slot;
+            if (perPull)
+            {
+                if (GetInt(e, "fight") is not int fid || !fightSlot.TryGetValue(fid, out slot)) continue;
+            }
+            else
+            {
+                var t = ((GetDouble(e, "timestamp") ?? 0) - q.StartTime) / 1000.0;
+                slot = Math.Clamp((int)(t / bucketSec), 0, slotCount - 1);
+            }
+
+            if (!values.TryGetValue(player.Id, out var row)) values[player.Id] = row = new double[slotCount];
+            row[slot] += measure == "count" ? 1 : GetDouble(e, "amount") ?? 0;
+        }
+        if (values.Count == 0) return new ToolOutput("No data for that chart (nothing matched the filters).");
+
+        var unit = measure == "count" ? CountUnit(q.DataType, eventType) : (q.DataType == "Healing" ? "Healing" : q.DataType == "DamageTaken" ? "Damage taken" : "Damage");
+        var series = values
+            .Select(kv =>
+            {
+                var actor = report.ActorsById[kv.Key];
+                var total = kv.Value.Sum();
+                var secondary = perPull ? total / fights.Count : measure == "amount" ? total / Math.Max(1, durationSec) : total;
+                // Amounts on a timeline are shown per second (like DPS); counts stay per bucket.
+                var points = perPull || measure == "count"
+                    ? kv.Value.Select(v => Math.Round(v, 1)).ToList()
+                    : kv.Value.Select(v => Math.Round(v / bucketSec, 1)).ToList();
+                return new ChartSeries(actor.Name, actor.SubType, total, Math.Round(secondary, 1), points);
+            })
+            .OrderByDescending(s => s.Total)
+            .Take(30)
+            .ToList();
+
+        var metric = perPull
+            ? $"{unit} per pull"
+            : measure == "amount" ? (q.DataType switch { "Healing" => "HPS", "DamageTaken" => "DTPS", _ => "DPS" }) : $"{unit} per {bucketSec:0}s";
+        var chart = new ChartData(
+            args.OptionalString("title") ?? $"{unit} — {fight.Name}",
+            perPull ? "pulls" : "timeline",
+            metric,
+            TotalLabel: unit,
+            SecondaryLabel: perPull ? "Avg / pull" : measure == "amount" ? metric : unit,
+            StartSec: perPull ? 0 : (q.StartTime - fight.StartTime) / 1000.0,
+            IntervalSec: bucketSec,
+            DurationSec: durationSec,
+            XLabels: perPull ? [.. fights.Select(f => $"Pull {f.Id}")] : null,
+            series,
+            LinkFor(report, q));
+        return ChartOutput(report, q, chart);
+    }
+
+    private static string CountUnit(string dataType, string? eventType) => (dataType, eventType) switch
+    {
+        ("Deaths", _) => "Deaths",
+        ("Casts", _) => "Casts",
+        ("Interrupts", _) => "Interrupts",
+        ("Dispels", _) => "Dispels",
+        ("Debuffs" or "Buffs", _) => "Applications",
+        (_, "damage" or null) => "Hits",
+        (_, "heal") => "Heals",
+        _ => "Events",
+    };
+
+    private static ToolOutput ChartOutput(Report report, ReportQuery q, ChartData chart)
+    {
         var sb = new StringBuilder();
-        sb.AppendLine($"Chart shown to the user: \"{title}\" {DescribeWindow(report, q)}. Totals:");
-        foreach (var s in series.Take(15))
+        sb.AppendLine($"Chart shown to the user: \"{chart.Title}\" {DescribeWindow(report, q)}. {chart.TotalLabel} per player:");
+        foreach (var s in chart.Series.Take(15))
             sb.AppendLine($"  {s.Name} ({s.Class}) {s.Total.ToString("N0", CultureInfo.InvariantCulture)}");
-        sb.AppendLine("The chart and its ranked table appear below your answer, so don't repeat the full list; refer to it as \"the chart below\".");
-        return new ToolOutput(sb.ToString(), chart, link);
+        if (chart.Series.Count > 15) sb.AppendLine($"  …and {chart.Series.Count - 15} more in the chart");
+        sb.AppendLine("The chart and its full ranked table appear below your answer, so don't repeat the ranking; mention the top few and refer to \"the chart below\".");
+        return new ToolOutput(sb.ToString(), chart, chart.Link);
     }
 
     private static readonly Dictionary<string, string> WclPageTypes = new()
@@ -620,19 +762,26 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
             {
                 Name = "show_chart",
                 Description = """
-                    Show the user a Warcraft Logs-style chart: a line per player of DPS/HPS/damage-taken over time,
-                    plus a ranked table with totals, and a link to the same page on warcraftlogs.com.
-                    Use it alongside your answer when the question is about damage/healing/damage taken over a
-                    fight, phase or time window (e.g. 'who did the most damage to the Vipers in phase 1').
-                    One fight only. Returns the totals so you can refer to them.
+                    Show the user a Warcraft Logs-style chart (a line per player) plus a full ranked table of every
+                    player, and a link to warcraftlogs.com for single-pull charts.
+                    - One pull: the x axis is time (DPS/HPS for damage/healing, or counts per few seconds).
+                    - Several pulls (fight_ids / all_boss_pulls): the x axis is the pull, one point per pull.
+                    measure "amount" sums damage/healing; "count" counts events (hits, debuff applications, casts,
+                    interrupts, deaths). Defaults: amount for DamageDone/DamageTaken/Healing, count otherwise.
+                    Use it for every "who did/took/got hit by X the most" style ranking question. Returns the totals.
                     """,
                 InputSchema = new()
                 {
                     Properties = new Dictionary<string, JsonElement>
                     {
-                        ["title"] = Prop(new { type = "string", description = "Short chart title, e.g. 'Damage to Blightscale Viper — Phase 1, pull 29'." }),
+                        ["title"] = Prop(new { type = "string", description = "Short chart title, e.g. 'Caustic Waves hits — Phase 1, all pulls'." }),
                         ["data_type"] = Prop(new { type = "string", @enum = ChartDataTypes }),
+                        ["measure"] = Prop(new { type = "string", @enum = new[] { "amount", "count" } }),
+                        ["event_type"] = Prop(new { type = "string", description = "Override which event type counts, e.g. damage, applydebuff, cast. Sensible default per data_type." }),
+                        ["group_by"] = Prop(new { type = "string", @enum = new[] { "source", "target" }, description = "Which side is the player being ranked. Default: target for DamageTaken/Debuffs/Buffs/Deaths, source otherwise." }),
                         ["fight_id"] = windowProps["fight_id"],
+                        ["fight_ids"] = windowProps["fight_ids"],
+                        ["all_boss_pulls"] = windowProps["all_boss_pulls"],
                         ["phase"] = windowProps["phase"],
                         ["start_sec"] = windowProps["start_sec"],
                         ["end_sec"] = windowProps["end_sec"],
@@ -642,7 +791,7 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
                         ["target_id"] = windowProps["target_id"],
                         ["filter_expression"] = windowProps["filter_expression"],
                     },
-                    Required = ["title", "data_type", "fight_id"],
+                    Required = ["title", "data_type"],
                 },
             },
             new Tool

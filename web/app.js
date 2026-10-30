@@ -417,35 +417,49 @@
     canvasWrap.append(canvas);
     panel.append(canvasWrap);
 
+    // "timeline": x is seconds into the fight. "pulls": x is one category per pull.
+    const perPull = chart.kind === "pulls";
     const pointCount = Math.max(...chart.series.map((s) => s.points.length));
-    const xs = Array.from({ length: pointCount }, (_, i) => chart.startSec + i * chart.intervalSec);
+    const xs = perPull
+      ? chart.xLabels
+      : Array.from({ length: pointCount }, (_, i) => chart.startSec + i * chart.intervalSec);
+    const toPoints = (values) => perPull ? values : values.map((y, i) => ({ x: xs[i], y }));
     const top = chart.series.slice(0, CHART_LINES);
-    const total = xs.map((_, i) => chart.series.reduce((sum, s) => sum + (s.points[i] || 0), 0));
+    const total = Array.from({ length: pointCount }, (_, i) => chart.series.reduce((sum, s) => sum + (s.points[i] || 0), 0));
 
+    const lineStyle = perPull
+      ? { pointRadius: 2.5, pointHoverRadius: 4, tension: 0.15 }
+      : { pointRadius: 0, tension: 0.3 };
     const datasets = [
-      {
-        label: "Total", data: total.map((y, i) => ({ x: xs[i], y })),
-        borderColor: "#7fd3ff", borderWidth: 2, pointRadius: 0, tension: 0.3, hidden: true,
-      },
+      { label: "Total", data: toPoints(total), borderColor: "#7fd3ff", borderWidth: 2, hidden: true, ...lineStyle },
       ...top.map((s, i) => ({
-        label: s.name, data: s.points.map((y, j) => ({ x: xs[j], y })),
-        borderColor: colorFor(s, i), borderWidth: 1.5, pointRadius: 0, tension: 0.3,
+        label: s.name, data: toPoints(s.points),
+        borderColor: colorFor(s, i), backgroundColor: colorFor(s, i), borderWidth: 1.5, ...lineStyle,
       })),
     ];
+
+    const xScale = perPull
+      ? {
+          type: "category",
+          ticks: { color: "#9aa3b2", autoSkip: true, maxRotation: 0, callback: (v, i) => xs[i].replace("Pull ", "") },
+          grid: { color: "rgba(127,211,255,0.08)" },
+          title: { display: true, text: "Pull", color: "#9aa3b2" },
+        }
+      : {
+          type: "linear", min: xs[0], max: xs[xs.length - 1],
+          ticks: { color: "#9aa3b2", callback: (v) => formatClock(v), maxTicksLimit: 12 },
+          grid: { color: "rgba(127,211,255,0.08)" },
+        };
 
     // Chart.js needs the canvas in the document to size itself, so build after this tick.
     requestAnimationFrame(() => new Chart(canvas, {
       type: "line",
-      data: { datasets },
+      data: perPull ? { labels: xs, datasets } : { datasets },
       options: {
-        responsive: true, maintainAspectRatio: false, animation: false, parsing: false, normalized: true,
+        responsive: true, maintainAspectRatio: false, animation: false, parsing: perPull, normalized: true,
         interaction: { mode: "index", intersect: false },
         scales: {
-          x: {
-            type: "linear", min: xs[0], max: xs[xs.length - 1],
-            ticks: { color: "#9aa3b2", callback: (v) => formatClock(v), maxTicksLimit: 12 },
-            grid: { color: "rgba(127,211,255,0.08)" },
-          },
+          x: xScale,
           y: {
             beginAtZero: true,
             ticks: { color: "#9aa3b2", callback: (v) => formatAmount(v) },
@@ -459,7 +473,7 @@
             itemSort: (a, b) => b.parsed.y - a.parsed.y,
             filter: (item) => item.parsed.y > 0,
             callbacks: {
-              title: (items) => formatClock(items[0].parsed.x),
+              title: (items) => perPull ? xs[items[0].dataIndex] : formatClock(items[0].parsed.x),
               label: (item) => ` ${item.dataset.label}: ${formatAmount(item.parsed.y)} ${chart.metric}`,
             },
           },
@@ -478,7 +492,7 @@
     const max = chart.series[0]?.total || 1;
     const table = el("table", "rank-table");
     const head = el("tr");
-    for (const h of ["Name", "", "Amount", chart.metric]) head.append(el("th", "", h));
+    for (const h of ["Name", "", chart.totalLabel, chart.secondaryLabel]) head.append(el("th", "", h));
     const thead = el("thead");
     thead.append(head);
     table.append(thead);
@@ -496,7 +510,7 @@
       const amount = el("span", "rank-amount", formatAmount(s.total));
       barCell.append(bar, amount);
 
-      const rate = el("td", "rank-rate", (s.total / Math.max(1, chart.durationSec)).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
+      const rate = el("td", "rank-rate", s.secondary.toLocaleString(undefined, { maximumFractionDigits: 1 }));
       row.append(name, pct, barCell, rate);
       body.append(row);
     });

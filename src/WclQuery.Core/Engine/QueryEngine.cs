@@ -124,9 +124,12 @@ public sealed partial class QueryEngine(
             answering. Don't pick one yourself because it sounds closest: a confident wrong answer is worse
             than a quick question.
           Say which ability you used.
-        - Charts: when the question is about damage, healing or damage taken over a single fight, phase or
-          time window, also call show_chart so the user sees the graph and ranked table. Skip it for
-          counts, deaths, casts and multi-pull questions.
+        - Charts: whenever the answer ranks players ("who did/took/got hit by/died to X the most", damage,
+          healing, hits, debuffs, casts, interrupts), call show_chart with the same filters you used, so the
+          user gets the graph and the full ranked table of every player. This applies to one pull (timeline)
+          and to several pulls or all_boss_pulls (one point per pull). Use measure "count" for "how many
+          times / hits" questions. You can call it in parallel with your other lookups once you know the
+          ability/target. Skip it only for non-ranking questions (who pulled, when lust was cast, one event).
         - Be economical: you have a limited number of tool rounds, so combine fights in one call
           (fight_ids / all_boss_pulls) instead of one call per fight, and make independent calls in parallel.
         - Bloodlust-type effects have these spell ids: Bloodlust 2825, Heroism 32182, Time Warp 80353,
@@ -142,8 +145,10 @@ public sealed partial class QueryEngine(
 
         Answer format. Raiders skim on their phones, so make the answer easy to scan, not a run of paragraphs:
         1. First line: the answer in one bold sentence.
-        2. Then the supporting numbers as a markdown table (or 2-4 bullets for very small results). Skip the
-           table when a chart already shows the same ranking.
+        2. Then the supporting numbers as a markdown table (or 2-4 bullets for very small results). When a
+           chart shows the ranking, don't repeat it as a table: mention the top 2-3 in a line and say the full
+           ranking is in the chart below. Use a table only for details the chart doesn't show (e.g. collisions
+           vs wave breaks).
         3. Then a "**Notes**" line followed by at most 4 short bullets: which fights/phase/time window you used,
            which ability you treated as the mechanic, any filters, and other caveats. One line each.
         Never write paragraphs longer than two sentences. Use "###" headings only to separate genuinely different
