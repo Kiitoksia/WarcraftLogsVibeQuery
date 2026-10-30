@@ -247,7 +247,13 @@ input:focus-visible, textarea:focus-visible, button:focus-visible, a:focus-visib
   padding: 9px 0; font-size: 15px; max-height: 160px; outline: none;
 }
 .composer-meta { display: flex; justify-content: space-between; gap: 12px; padding: 0 4px; }
-.composer .btn { white-space: nowrap; flex: none; }
+/* Same height for every button in the ask box (New question is a ghost button, Ask a primary one). */
+.composer .btn {
+  white-space: nowrap; flex: none;
+  height: 40px; padding: 0 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 14px;
+}
 @media (max-width: 600px) {
   /* Phones: question box on its own row, buttons under it. */
   .composer { flex-wrap: wrap; justify-content: flex-end; padding: 8px; }

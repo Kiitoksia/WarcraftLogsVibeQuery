@@ -262,7 +262,7 @@ public sealed partial class QueryEngine(
 
         async Task<QueryResult> Result(string status, string? answer, string? question = null, IReadOnlyList<AskOption>? options = null) =>
             new(conv.Id, status, answer, question, options ?? [], charts,
-                [.. links.DistinctBy(l => l.Url).Take(4)], await PlayersAsync(conv.ReportCode, ct), traces, usage.ToUsage(),
+                AnswerLinks(charts, links), await PlayersAsync(conv.ReportCode, ct), traces, usage.ToUsage(),
                 await ScopeAsync(conv.ReportCode, traces, ct));
 
         // The last round withholds tools so the model answers with what it has instead of giving up.
@@ -408,6 +408,18 @@ public sealed partial class QueryEngine(
         return (call.Id, question, options);
     }
 
+    /// <summary>
+    /// Links for what the answer actually shows. The model also makes supporting lookups (e.g. casts in the seconds
+    /// after each hit) whose pages on their own would mislead, so: the charts' links when there are charts, otherwise
+    /// only the last table lookup, which is the one the answer was written from.
+    /// </summary>
+    private static IReadOnlyList<WclLink> AnswerLinks(List<ChartData> charts, List<WclLink> tableLinks)
+    {
+        var chartLinks = charts.Select(c => c.Link).OfType<WclLink>().DistinctBy(l => l.Url).Take(3).ToList();
+        if (charts.Count > 0) return chartLinks; // a chart with no matching Warcraft Logs page gets no link
+        return tableLinks.Count > 0 ? [tableLinks[^1]] : [];
+    }
+
     private async Task<LlmToolResult> RunToolAsync(
         ReportTools tools, LlmToolCall call, List<ToolCallTrace> traces,
         List<ChartData> charts, List<WclLink> links, CancellationToken ct)
@@ -418,8 +430,9 @@ public sealed partial class QueryEngine(
         {
             var output = await tools.ExecuteAsync(call.Name, call.Input, ct);
             traces.Add(new(call.Name, inputJson, null, sw.ElapsedMilliseconds));
+            // Charts keep their own link; other lookups' links are candidates only (see AnswerLinks).
             if (output.Chart is not null) charts.Add(output.Chart);
-            if (output.Link is not null) links.Add(output.Link);
+            else if (output.Link is not null) links.Add(output.Link);
             return new(call.Id, output.Text);
         }
         catch (Exception ex) when (ex is ToolInputException or WarcraftLogsException)
