@@ -383,25 +383,49 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
         ["Dispels"] = "dispels", ["Summons"] = "summons", ["Resources"] = "resources", ["Threat"] = "threat",
     };
 
-    /// <summary>Deep link to the same view on warcraftlogs.com (single-fight queries only).</summary>
+    /// <summary>
+    /// Deep link to the same view on warcraftlogs.com: one pull (fight + time window) or all pulls of a boss
+    /// (boss + difficulty + wipes), with the filter expression and phase carried over as an expression pin.
+    /// </summary>
     private static WclLink? LinkFor(Report report, ReportQuery q)
     {
-        if (q.FightIds is not [var fightId] || !WclPageTypes.TryGetValue(q.DataType, out var type)) return null;
-        var fight = report.GetFight(fightId)!;
+        if (q.FightIds is not { Count: > 0 } ids || !WclPageTypes.TryGetValue(q.DataType, out var type)) return null;
+        var fights = ids.Select(id => report.GetFight(id)!).ToList();
+        var first = fights[0];
 
-        var url = new StringBuilder($"https://www.warcraftlogs.com/reports/{report.Code}?fight={fightId}&type={type}");
-        url.Append($"&start={q.StartTime}&end={q.EndTime}");
+        var url = new StringBuilder($"https://www.warcraftlogs.com/reports/{report.Code}?");
+        var label = new StringBuilder($"{q.DataType} · ");
+        if (fights.Count == 1)
+        {
+            url.Append($"fight={first.Id}&start={q.StartTime}&end={q.EndTime}");
+            label.Append($"{first.Name} (fight {first.Id}) · {FormatClock(q.StartTime - first.StartTime)}–{FormatClock(q.EndTime - first.StartTime)}");
+        }
+        else
+        {
+            // Warcraft Logs can show every pull of one boss at one difficulty, but not an arbitrary set of pulls.
+            if (first.EncounterId == 0 || fights.Any(f => f.EncounterId != first.EncounterId || f.Difficulty != first.Difficulty))
+                return null;
+            url.Append($"boss={first.EncounterId}");
+            if (first.Difficulty is int difficulty) url.Append($"&difficulty={difficulty}");
+            url.Append("&wipes=1");
+            var allPulls = report.Fights.Count(f => f.EncounterId == first.EncounterId && f.Difficulty == first.Difficulty);
+            label.Append(fights.Count == allPulls
+                ? $"all {allPulls} {first.Name} pulls"
+                : $"all {allPulls} {first.Name} pulls (Warcraft Logs can't pick just these {fights.Count})");
+        }
+
+        url.Append($"&type={type}");
         if (q.HostilityType == "Enemies") url.Append("&hostility=1");
         if (q.SourceId is int s) url.Append($"&source={s}");
-        if (q.TargetId is int t) url.Append($"&target={t}");
+        if (q.TargetId is int t) { url.Append($"&target={t}"); label.Append(" · ").Append(report.ActorName(t)); }
         if (q.AbilityId is long a) url.Append($"&ability={a}");
 
-        var label = new StringBuilder($"{q.DataType} · {fight.Name} (fight {fightId})");
-        if (q.TargetId is int tid) label.Append(" · ").Append(report.ActorName(tid));
-        label.Append($" · {FormatClock(q.StartTime - fight.StartTime)}–{FormatClock(q.EndTime - fight.StartTime)}");
-        // A phase-only filter is covered by start/end; anything else can't be carried into the URL.
-        if (!string.IsNullOrEmpty(q.FilterExpression) && !q.FilterExpression.StartsWith("encounterPhase = ", StringComparison.Ordinal))
-            label.Append(" (without the custom filter)");
+        // The same filter (including the phase) as an expression pin, in Warcraft Logs' own pin format.
+        if (!string.IsNullOrWhiteSpace(q.LinkFilter))
+        {
+            url.Append("&pins=").Append(Uri.EscapeDataString($"2$Off$#244F4B$expression${q.LinkFilter}"));
+            label.Append(" · filtered");
+        }
         if (q.WipeCutoff is not null)
             label.Append(" (set the death cutoff on the Warcraft Logs page to match)");
         return new WclLink(label.ToString(), url.ToString());
@@ -621,6 +645,7 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
             SourceId = args.OptionalInt("source_id"),
             TargetId = args.OptionalInt("target_id"),
             FilterExpression = filter,
+            LinkFilter = filter,
             WipeCutoff = settings.DeathCutoff,
         };
     }

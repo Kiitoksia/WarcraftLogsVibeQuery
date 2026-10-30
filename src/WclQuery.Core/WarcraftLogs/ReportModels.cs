@@ -161,6 +161,11 @@ public sealed record ReportQuery
     public int? SourceId { get; init; }
     public int? TargetId { get; init; }
     public string? FilterExpression { get; init; }
+    /// <summary>
+    /// The user-facing part of the filter (the model's filter_expression plus the phase), without filters the tools
+    /// add internally (like the event type). Used for "Open in Warcraft Logs" links.
+    /// </summary>
+    public string? LinkFilter { get; init; }
     public string? ViewBy { get; init; }
     /// <summary>Ignore all events after this many player deaths in each fight.</summary>
     public int? WipeCutoff { get; init; }
