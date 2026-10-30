@@ -2,10 +2,15 @@
 
 End result:
 
-- **API:** `https://<app-name>.azurewebsites.net`, redeployed automatically when `src/` changes on `main`.
+- **API:** `https://<api-host>`, redeployed automatically when `src/` changes on `main`.
 - **Site:** `https://kiitoksia.github.io/WarcraftLogsVibeQuery/`, redeployed when `web/` changes on `main`.
 
-Do the steps in order. Wherever you see `<app-name>`, use the name you pick in step 1.
+Do the steps in order. Two placeholders come from step 1:
+
+- `<app-name>`: the **Name** you give the Web App (e.g. `WarcraftLogs`). Only used by the deploy workflow.
+- `<api-host>`: the **Default domain** shown on the app's Overview page. New apps get a unique
+  hostname such as `warcraftlogs-e8efcad4hvbndsa9.ukwest-01.azurewebsites.net`, not
+  `<app-name>.azurewebsites.net`, so copy it exactly from the portal.
 
 ---
 
@@ -14,16 +19,20 @@ Do the steps in order. Wherever you see `<app-name>`, use the name you pick in s
 1. Go to https://portal.azure.com → **Create a resource** → **Web App**.
 2. **Basics** tab:
    - **Resource group:** create a new one, e.g. `log-oracle`.
-   - **Name:** e.g. `log-oracle-api`. This becomes `<app-name>` and must be globally unique.
+   - **Name:** e.g. `WarcraftLogs`. This is `<app-name>`.
    - **Publish:** Code.
    - **Runtime stack:** .NET 10 (LTS).
    - **Operating system:** Windows.
-   - **Region:** one close to you (e.g. UK South / West Europe).
+   - **Region:** one close to you. UK West worked for us.
    - **Pricing plan:** create a new plan and choose **Free F1**.
+
+   If creation fails with *"Operation cannot be completed without additional quota … F1 VMs: 0"*,
+   your subscription has no free-tier allowance in that region. Pick another region (e.g. UK West,
+   North Europe, East US) and try again, or switch the operating system to Linux.
 3. **Deployment** tab: leave GitHub Actions **disabled**. The repo already has its own workflow.
 4. **Review + create** → **Create**, then wait for it to finish and open the resource.
 
-Note the URL on the Overview page: `https://<app-name>.azurewebsites.net`.
+On the Overview page, copy the **Default domain**. That's `<api-host>`.
 
 ## 2. Allow publish-profile deployments
 
@@ -39,7 +48,7 @@ New apps have this switched off by default.
 2. **OAuth2** page:
    - Copy the **Client ID**.
    - **Reset Secret** → copy the **Client Secret**.
-   - **Redirects** → **Add Redirect** → `https://<app-name>.azurewebsites.net/auth/callback` → **Save Changes**.
+   - **Redirects** → **Add Redirect** → `https://<api-host>/auth/callback` → **Save Changes**.
 3. In the Discord app (not the website): **User Settings → Advanced → Developer Mode** on. Then:
    - Right-click your guild server icon → **Copy Server ID**.
    - Server Settings → Roles → right-click each role that should have access (Raider, Officer, …) → **Copy Role ID**.
@@ -58,7 +67,7 @@ then **Apply** and confirm the restart.
 | `Claude__Effort` | `medium` |
 | `Discord__ClientId` | from step 3 |
 | `Discord__ClientSecret` | from step 3 |
-| `Discord__RedirectUri` | `https://<app-name>.azurewebsites.net/auth/callback` |
+| `Discord__RedirectUri` | `https://<api-host>/auth/callback` |
 | `Discord__GuildId` | your server ID |
 | `Discord__AllowedRoleIds__0` | Raider role ID |
 | `Discord__AllowedRoleIds__1` | Officer role ID (add `__2`, `__3`… for more roles) |
@@ -76,7 +85,7 @@ GitHub repo → **Settings → Secrets and variables → Actions**:
   - `AZURE_WEBAPP_PUBLISH_PROFILE`: paste the entire contents of the publish profile file from step 2.
 - **Variables** tab → **New repository variable**:
   - `AZURE_WEBAPP_NAME`: `<app-name>`
-  - `API_BASE_URL`: `https://<app-name>.azurewebsites.net`
+  - `API_BASE_URL`: `https://<api-host>`
 
 ## 6. Turn on GitHub Pages
 
@@ -87,7 +96,7 @@ GitHub repo → **Settings → Pages** → **Source: GitHub Actions**.
 GitHub repo → **Actions**:
 
 1. **Deploy API to Azure App Service** → **Run workflow**. When it's green, open
-   `https://<app-name>.azurewebsites.net/` and you should see "Warcraft Logs Query API is running."
+   `https://<api-host>/` and you should see "Warcraft Logs Query API is running."
 2. **Deploy site to GitHub Pages** → **Run workflow**. When it's green, open
    `https://kiitoksia.github.io/WarcraftLogsVibeQuery/`.
 
