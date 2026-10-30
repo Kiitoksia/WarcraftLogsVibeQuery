@@ -270,10 +270,6 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
         var side = args.OptionalString("group_by") ?? (TargetSideTypes.Contains(q.DataType) ? "target" : "source");
         if (side is not ("source" or "target")) throw new ToolInputException("For show_chart, group_by must be source or target.");
 
-        var page = await wcl.GetEventsAsync(reportCode, q, MaxCountedEvents, ct);
-        if (page.Data.Count >= MaxCountedEvents)
-            throw new ToolInputException($"Too many events (over {MaxCountedEvents:N0}) for this chart. Narrow it with ability_id, target_id, phase or fewer pulls.");
-
         var fights = q.FightIds!.Select(id => report.GetFight(id)!).OrderBy(f => f.StartTime).ToList();
         var perPull = fights.Count > 1;
         var fight = fights[0];
@@ -290,26 +286,32 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
             return actor.Type == "Player" ? actor : null;
         }
 
+        // Aggregate page by page so whole-night charts (100k+ events) don't need every event in memory.
         var values = new Dictionary<int, double[]>();
-        foreach (var e in page.Data)
+        var (_, truncated) = await wcl.ForEachEventPageAsync(reportCode, q, MaxCountedEvents, events =>
         {
-            if (eventType is not null && GetString(e, "type") != eventType) continue;
-            if (PlayerFor(GetInt(e, side == "target" ? "targetID" : "sourceID")) is not { } player) continue;
-
-            int slot;
-            if (perPull)
+            foreach (var e in events)
             {
-                if (GetInt(e, "fight") is not int fid || !fightSlot.TryGetValue(fid, out slot)) continue;
-            }
-            else
-            {
-                var t = ((GetDouble(e, "timestamp") ?? 0) - q.StartTime) / 1000.0;
-                slot = Math.Clamp((int)(t / bucketSec), 0, slotCount - 1);
-            }
+                if (eventType is not null && GetString(e, "type") != eventType) continue;
+                if (PlayerFor(GetInt(e, side == "target" ? "targetID" : "sourceID")) is not { } player) continue;
 
-            if (!values.TryGetValue(player.Id, out var row)) values[player.Id] = row = new double[slotCount];
-            row[slot] += measure == "count" ? 1 : EventValue(e, value);
-        }
+                int slot;
+                if (perPull)
+                {
+                    if (GetInt(e, "fight") is not int fid || !fightSlot.TryGetValue(fid, out slot)) continue;
+                }
+                else
+                {
+                    var t = ((GetDouble(e, "timestamp") ?? 0) - q.StartTime) / 1000.0;
+                    slot = Math.Clamp((int)(t / bucketSec), 0, slotCount - 1);
+                }
+
+                if (!values.TryGetValue(player.Id, out var row)) values[player.Id] = row = new double[slotCount];
+                row[slot] += measure == "count" ? 1 : EventValue(e, value);
+            }
+        }, ct);
+        if (truncated)
+            throw new ToolInputException($"Too many events (over {MaxCountedEvents:N0}) for this chart. Narrow it with ability_id, target_id, phase or fewer pulls.");
         if (values.Count == 0) return new ToolOutput("No data for that chart (nothing matched the filters).");
 
         var unit = measure == "count" ? CountUnit(q.DataType, eventType)
@@ -427,7 +429,17 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
 
     // ---- count_events --------------------------------------------------------
 
-    private const int MaxCountedEvents = 50_000;
+    // Events are aggregated a page at a time (not held in memory), so this is about time, not memory:
+    // ~30 Warcraft Logs pages of 10,000, enough for a whole raid night of one mechanic or add.
+    private const int MaxCountedEvents = 300_000;
+
+    private sealed class CountGroup
+    {
+        public int Count;
+        public double Amount;
+        public double Absorbed;
+        public readonly HashSet<int?> Fights = [];
+    }
 
     private async Task<string> CountEventsAsync(Report report, ToolArgs args, CancellationToken ct)
     {
@@ -442,8 +454,6 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
         var groupBy = args.OptionalString("group_by") ?? "target";
         var top = Math.Clamp(args.OptionalInt("top") ?? 25, 1, 100);
         var value = ValueArg(args);
-
-        var page = await wcl.GetEventsAsync(reportCode, q, MaxCountedEvents, ct);
 
         string Key(JsonElement e)
         {
@@ -462,16 +472,25 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
             };
         }
 
-        var rows = page.Data
-            .Where(e => eventType is null || GetString(e, "type") == eventType)
-            .GroupBy(Key)
-            .Select(g => (
-                Key: g.Key,
-                Count: g.Count(),
-                Amount: g.Sum(e => EventValue(e, value)),
+        // Aggregate page by page so large ranges don't need every event in memory.
+        var groups = new Dictionary<string, CountGroup>();
+        var (scanned, truncated) = await wcl.ForEachEventPageAsync(reportCode, q, MaxCountedEvents, events =>
+        {
+            foreach (var e in events)
+            {
+                if (eventType is not null && GetString(e, "type") != eventType) continue;
+                var key = Key(e);
+                if (!groups.TryGetValue(key, out var g)) groups[key] = g = new CountGroup();
+                g.Count++;
+                g.Amount += EventValue(e, value);
                 // Shown separately so a shielded target (lots of hits, little landing) doesn't look untouched.
-                Absorbed: value == "amount" ? g.Sum(e => GetDouble(e, "absorbed") ?? 0) : 0,
-                Fights: g.Select(e => GetInt(e, "fight")).Distinct().Count()))
+                if (value == "amount") g.Absorbed += GetDouble(e, "absorbed") ?? 0;
+                g.Fights.Add(GetInt(e, "fight"));
+            }
+        }, ct);
+
+        var rows = groups
+            .Select(kv => (Key: kv.Key, kv.Value.Count, kv.Value.Amount, kv.Value.Absorbed, Fights: kv.Value.Fights.Count))
             .OrderByDescending(r => value == "amount" ? r.Count : r.Amount)
             .ToList();
 
@@ -479,15 +498,15 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
         sb.AppendLine(DescribeWindow(report, q));
         var amountLabel = value switch { "absorbed" => "total absorbed", "total" => "total amount+absorbed", _ => "total amount" };
         var showAbsorbed = rows.Any(r => r.Absorbed > 0);
-        sb.AppendLine($"{page.Data.Count} events scanned, {rows.Count} groups (by {groupBy}). count | {groupBy} | {amountLabel}{(showAbsorbed ? " | absorbed by shields" : "")} | fights it appears in:");
+        sb.AppendLine($"{scanned} events scanned, {rows.Count} groups (by {groupBy}). count | {groupBy} | {amountLabel}{(showAbsorbed ? " | absorbed by shields" : "")} | fights it appears in:");
         static string Num(double v) => v > 0 ? v.ToString("N0", CultureInfo.InvariantCulture) : "-";
         foreach (var r in rows.Take(top))
             sb.AppendLine($"  {r.Count} | {r.Key} | {Num(r.Amount)}{(showAbsorbed ? $" | {Num(r.Absorbed)}" : "")} | {r.Fights}");
         if (showAbsorbed)
             sb.AppendLine("Note: a target with many hits but little amount and a large absorbed total was shielded; the absorbed column is the damage done into its shield.");
         if (rows.Count > top) sb.AppendLine($"  …{rows.Count - top} more groups");
-        if (page.Data.Count >= MaxCountedEvents)
-            sb.AppendLine($"WARNING: stopped after {MaxCountedEvents} events, so counts are partial. Add filters (ability_id, event_type, phase) to narrow it.");
+        if (truncated)
+            sb.AppendLine($"WARNING: stopped after {MaxCountedEvents:N0} events, so counts are partial. Add filters (ability_id, event_type, phase) to narrow it.");
         return sb.ToString();
     }
 

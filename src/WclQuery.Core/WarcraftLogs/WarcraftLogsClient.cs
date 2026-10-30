@@ -121,24 +121,34 @@ public sealed class WarcraftLogsClient(
     public async Task<EventPage> GetEventsAsync(string code, ReportQuery q, int maxEvents, CancellationToken ct = default)
     {
         var result = new EventPage();
+        var (_, more) = await ForEachEventPageAsync(code, q, maxEvents, page => result.Data.AddRange(page), ct);
+        if (more) result.NextPageTimestamp = 1; // signals "there were more events" to callers that check it
+        return result;
+    }
+
+    /// <summary>
+    /// Streams events a page (up to 10,000) at a time to <paramref name="onPage"/>, so large ranges can be aggregated
+    /// without holding every event in memory. Returns how many were read and whether more remained past the cap.
+    /// </summary>
+    public async Task<(int Read, bool More)> ForEachEventPageAsync(string code, ReportQuery q, int maxEvents,
+        Action<IReadOnlyList<JsonElement>> onPage, CancellationToken ct = default)
+    {
+        var read = 0;
         double start = q.StartTime;
-        while (result.Data.Count < maxEvents)
+        while (read < maxEvents)
         {
             var vars = BuildVariables(code, q with { StartTime = (long)start });
-            vars["limit"] = Math.Min(10000, maxEvents - result.Data.Count);
+            vars["limit"] = Math.Min(10000, maxEvents - read);
             var data = await QueryAsync(EventsQuery, vars, ct);
             var page = data["reportData"]?["report"]?["events"]?.Deserialize<EventPage>(JsonOptions);
-            if (page is null) break;
+            if (page is null || page.Data.Count == 0) return (read, false);
 
-            result.Data.AddRange(page.Data);
-            result.NextPageTimestamp = page.NextPageTimestamp;
-            if (page.NextPageTimestamp is not double next || page.Data.Count == 0) break;
+            onPage(page.Data);
+            read += page.Data.Count;
+            if (page.NextPageTimestamp is not double next) return (read, false);
             start = next;
         }
-
-        if (result.Data.Count > maxEvents)
-            result.Data.RemoveRange(maxEvents, result.Data.Count - maxEvents);
-        return result;
+        return (read, true);
     }
 
     public async Task<JsonNode?> GetTableAsync(string code, ReportQuery q, CancellationToken ct = default)

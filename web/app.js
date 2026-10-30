@@ -433,8 +433,8 @@
       if (data.usage) {
         const u = data.usage;
         const tokens = u.input + u.cacheRead + u.cacheWrite + u.output;
-        let usage = `${data.toolCalls?.length || 0} lookup${data.toolCalls?.length === 1 ? "" : "s"} · ${(tokens / 1000).toFixed(1)}k tokens`;
-        if (u.estimatedCostUsd != null) usage += ` · ≈$${u.estimatedCostUsd.toFixed(3)}`;
+        // Tokens only: prices vary by provider (and Foundry bills against credits), so cost stays in the server log.
+        const usage = `${data.toolCalls?.length || 0} lookup${data.toolCalls?.length === 1 ? "" : "s"} · ${(tokens / 1000).toFixed(1)}k tokens`;
         footer.append(el("span", "", usage));
       }
       for (const link of data.links || []) {
