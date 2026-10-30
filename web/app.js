@@ -6,18 +6,27 @@
   const EXAMPLES = [
     "Who pressed Bloodlust on the last pull, and when?",
     "Who ninja pulled the boss on the last pull?",
-    "Who did the most damage to the adds in the first minute of the kill?",
-    "Who died first on each wipe, and to what?",
-    "Who interrupted the most on the kill?",
+    "Who did the most damage to the adds in phase 1 of the last pull?",
+    "Who died first most often tonight, and to what?",
+    "Who interrupted the most on the last pull?",
     "Who took the most avoidable damage on the last pull?",
   ];
+
+  // Standard WoW class colours, as used on Warcraft Logs.
+  const CLASS_COLORS = {
+    DeathKnight: "#C41E3A", DemonHunter: "#A330C9", Druid: "#FF7C0A", Evoker: "#33937F",
+    Hunter: "#AAD372", Mage: "#3FC7EB", Monk: "#00FF98", Paladin: "#F48CBA", Priest: "#FFFFFF",
+    Rogue: "#FFF468", Shaman: "#0070DD", Warlock: "#8788EE", Warrior: "#C69B6D",
+  };
+  const FALLBACK_COLORS = ["#e0b04a", "#7fb3ff", "#ff8a80", "#9be29b", "#d7a6ff", "#ffd27f"];
+  const CHART_LINES = 10;
 
   const $ = (id) => document.getElementById(id);
   const els = {
     userArea: $("user-area"), loginPanel: $("login-panel"), loginBtn: $("login-btn"),
     authError: $("auth-error"), askPanel: $("ask-panel"), report: $("report"),
     question: $("question"), examples: $("examples"), askBtn: $("ask-btn"),
-    charCount: $("char-count"), results: $("results"), template: $("result-template"),
+    charCount: $("char-count"), results: $("results"),
   };
 
   const storage = {
@@ -25,6 +34,15 @@
     set(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
     remove(k) { try { localStorage.removeItem(k); } catch { /* private mode */ } },
   };
+
+  const el = (tag, className, text) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+
+  // ---- Auth -------------------------------------------------------------------
 
   // The API redirects back with #token=... or #authError=... after Discord login.
   function consumeAuthFragment() {
@@ -38,14 +56,13 @@
 
   async function api(path, options = {}) {
     const token = storage.get(TOKEN_KEY);
-    const res = await fetch(API + path, {
+    return fetch(API + path, {
       ...options,
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
     });
-    return res;
   }
 
   function showLogin(error) {
@@ -59,13 +76,9 @@
   function showApp(user) {
     els.loginPanel.hidden = true;
     els.askPanel.hidden = false;
-    const name = document.createElement("span");
-    name.textContent = user.name;
-    const logout = document.createElement("button");
-    logout.className = "btn link";
-    logout.textContent = "Log out";
+    const logout = el("button", "btn link", "Log out");
     logout.onclick = () => { storage.remove(TOKEN_KEY); showLogin(); };
-    els.userArea.replaceChildren(name, logout);
+    els.userArea.replaceChildren(el("span", "", user.name), logout);
     els.report.value = storage.get(REPORT_KEY) || "";
     els.question.focus();
   }
@@ -73,7 +86,6 @@
   async function init() {
     const authError = consumeAuthFragment();
     renderExamples();
-
     if (authError) return showLogin(authError);
     try {
       const res = await api("/api/me");
@@ -85,12 +97,12 @@
     }
   }
 
+  // ---- Ask form -----------------------------------------------------------------
+
   function renderExamples() {
     for (const text of EXAMPLES) {
-      const chip = document.createElement("button");
-      chip.className = "chip";
+      const chip = el("button", "chip", text);
       chip.type = "button";
-      chip.textContent = text;
       chip.onclick = () => { els.question.value = text; updateCount(); els.question.focus(); };
       els.examples.append(chip);
     }
@@ -100,72 +112,266 @@
     els.charCount.textContent = `${els.question.value.length} / 500`;
   }
 
-  function addResultCard(question) {
-    const card = els.template.content.firstElementChild.cloneNode(true);
-    card.querySelector(".result-question").textContent = question;
-    card.querySelector(".result-body").innerHTML =
-      '<p class="thinking"><span class="spinner" aria-hidden="true"></span>Reading the logs…</p>';
-    els.results.prepend(card);
-    return card;
-  }
-
-  function fillResult(card, data) {
-    const body = card.querySelector(".result-body");
-    body.innerHTML = DOMPurify.sanitize(marked.parse(data.answer || ""));
-
-    const calls = data.toolCalls || [];
-    if (calls.length) {
-      const trace = card.querySelector(".trace");
-      trace.hidden = false;
-      trace.querySelector("summary").textContent =
-        `How I found this (${calls.length} lookup${calls.length === 1 ? "" : "s"})`;
-      const list = trace.querySelector("ol");
-      for (const c of calls) {
-        const li = document.createElement("li");
-        const code = document.createElement("code");
-        code.textContent = `${c.name} ${c.input}`;
-        li.append(code);
-        if (c.error) {
-          const err = document.createElement("span");
-          err.className = "error";
-          err.textContent = ` — ${c.error}`;
-          li.append(err);
-        }
-        list.append(li);
-      }
-    }
-  }
-
-  function failResult(card, message) {
-    const p = document.createElement("p");
-    p.className = "error";
-    p.textContent = message;
-    card.querySelector(".result-body").replaceChildren(p);
-  }
-
-  async function ask() {
+  function ask() {
     const question = els.question.value.trim();
     const report = els.report.value.trim();
     if (!report) { els.report.focus(); return; }
     if (!question) { els.question.focus(); return; }
-
     storage.set(REPORT_KEY, report);
-    els.askBtn.disabled = true;
-    const card = addResultCard(question);
+    new Thread(report).send(question);
+  }
 
-    try {
-      const res = await api("/api/ask", { method: "POST", body: JSON.stringify({ report, question }) });
-      if (res.status === 401) { storage.remove(TOKEN_KEY); showLogin("Your login expired. Please log in again."); return; }
-      if (res.status === 429) { failResult(card, "You've hit the hourly question limit. Try again later."); return; }
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) { failResult(card, data.error || "Something went wrong answering that."); return; }
-      fillResult(card, data);
-    } catch {
-      failResult(card, "Couldn't reach the server.");
-    } finally {
-      els.askBtn.disabled = false;
+  // ---- Conversation thread ------------------------------------------------------
+
+  // One card per conversation: the question, Claude's answers/questions, and a reply box.
+  class Thread {
+    constructor(report) {
+      this.report = report;
+      this.conversationId = null;
+      this.busy = false;
+
+      this.card = el("article", "panel thread");
+      this.log = el("div", "thread-log");
+      this.replyForm = el("form", "reply");
+      this.replyInput = el("input");
+      this.replyInput.maxLength = 500;
+      this.replyInput.placeholder = "Ask a follow-up…";
+      const send = el("button", "btn small", "Send");
+      this.replyForm.append(this.replyInput, send);
+      this.replyForm.hidden = true;
+      this.replyForm.onsubmit = (e) => {
+        e.preventDefault();
+        const text = this.replyInput.value.trim();
+        if (text) this.send(text);
+      };
+
+      this.card.append(this.log, this.replyForm);
+      els.results.prepend(this.card);
+    }
+
+    async send(text) {
+      if (this.busy) return;
+      this.busy = true;
+      els.askBtn.disabled = true;
+      this.replyForm.hidden = true;
+      this.replyInput.value = "";
+      this.disableOptions();
+
+      this.log.append(el("p", "msg-user", text));
+      const pending = el("p", "thinking");
+      pending.append(el("span", "spinner"), document.createTextNode("Reading the logs…"));
+      this.log.append(pending);
+
+      try {
+        let res;
+        try {
+          res = this.conversationId
+            ? await api(`/api/ask/${encodeURIComponent(this.conversationId)}/reply`, {
+                method: "POST", body: JSON.stringify({ message: text }),
+              })
+            : await api("/api/ask", {
+                method: "POST", body: JSON.stringify({ report: this.report, question: text }),
+              });
+        } catch {
+          this.error("Couldn't reach the server.");
+          return;
+        } finally {
+          pending.remove();
+        }
+
+        if (res.status === 401) { storage.remove(TOKEN_KEY); showLogin("Your login expired. Please log in again."); return; }
+        if (res.status === 429) { this.error("You've hit the hourly question limit. Try again later."); return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { this.error(data.error || "Something went wrong answering that."); return; }
+
+        this.conversationId = data.conversationId;
+        try {
+          this.render(data);
+        } catch (err) {
+          console.error("Failed to render answer", err, data);
+          this.error("Got an answer but couldn't display it.");
+        }
+      } finally {
+        this.busy = false;
+        els.askBtn.disabled = false;
+        this.replyForm.hidden = false;
+      }
+    }
+
+    render(data) {
+      const block = el("div", "msg-assistant");
+      if (data.answer) {
+        const body = el("div", "markdown");
+        body.innerHTML = DOMPurify.sanitize(marked.parse(data.answer));
+        block.append(body);
+      }
+
+      for (const chart of data.charts || []) block.append(renderChart(chart));
+
+      if (data.status === "question") {
+        const q = el("div", "clarify");
+        q.append(el("p", "clarify-question", data.question));
+        if (data.options?.length) {
+          const opts = el("div", "chips");
+          for (const option of data.options) {
+            const b = el("button", "chip option", option);
+            b.type = "button";
+            b.onclick = () => this.send(option);
+            opts.append(b);
+          }
+          q.append(opts);
+        }
+        block.append(q);
+        this.replyInput.placeholder = data.options?.length ? "…or type your own answer" : "Type your answer";
+      } else {
+        this.replyInput.placeholder = "Ask a follow-up…";
+      }
+
+      if (data.links?.length) {
+        const links = el("div", "wcl-links");
+        for (const link of data.links) {
+          const a = el("a", "wcl-link", `Open in Warcraft Logs ↗ ${link.label}`);
+          a.href = link.url;
+          a.target = "_blank";
+          a.rel = "noopener noreferrer";
+          links.append(a);
+        }
+        block.append(links);
+      }
+
+      if (data.toolCalls?.length) block.append(renderTrace(data.toolCalls));
+      this.log.append(block);
+      if (data.status === "question") this.replyInput.focus();
+    }
+
+    disableOptions() {
+      for (const b of this.log.querySelectorAll(".option")) b.disabled = true;
+    }
+
+    error(message) {
+      this.log.append(el("p", "error", message));
     }
   }
+
+  function renderTrace(calls) {
+    const details = el("details", "trace");
+    details.append(el("summary", "", `How I found this (${calls.length} lookup${calls.length === 1 ? "" : "s"})`));
+    const list = el("ol");
+    for (const c of calls) {
+      const li = el("li");
+      li.append(el("code", "", `${c.name} ${c.input}`));
+      if (c.error) li.append(el("span", "error", ` — ${c.error}`));
+      list.append(li);
+    }
+    details.append(list);
+    return details;
+  }
+
+  // ---- Charts -------------------------------------------------------------------
+
+  const formatAmount = (n) =>
+    n >= 1e9 ? `${(n / 1e9).toFixed(2)}b` : n >= 1e6 ? `${(n / 1e6).toFixed(2)}m` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : `${Math.round(n)}`;
+  const formatClock = (sec) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
+  const colorFor = (series, i) => CLASS_COLORS[series.class] || FALLBACK_COLORS[i % FALLBACK_COLORS.length];
+
+  // A Warcraft Logs-style panel: per-player lines over time, then a ranked table.
+  function renderChart(chart) {
+    const panel = el("section", "chart-panel");
+    panel.append(el("h3", "chart-title", chart.title));
+
+    const canvasWrap = el("div", "chart-canvas");
+    const canvas = el("canvas");
+    canvasWrap.append(canvas);
+    panel.append(canvasWrap);
+
+    const pointCount = Math.max(...chart.series.map((s) => s.points.length));
+    const xs = Array.from({ length: pointCount }, (_, i) => chart.startSec + i * chart.intervalSec);
+    const top = chart.series.slice(0, CHART_LINES);
+    const total = xs.map((_, i) => chart.series.reduce((sum, s) => sum + (s.points[i] || 0), 0));
+
+    const datasets = [
+      {
+        label: "Total", data: total.map((y, i) => ({ x: xs[i], y })),
+        borderColor: "#7fd3ff", borderWidth: 2, pointRadius: 0, tension: 0.3, hidden: true,
+      },
+      ...top.map((s, i) => ({
+        label: s.name, data: s.points.map((y, j) => ({ x: xs[j], y })),
+        borderColor: colorFor(s, i), borderWidth: 1.5, pointRadius: 0, tension: 0.3,
+      })),
+    ];
+
+    // Chart.js needs the canvas in the document to size itself, so build after this tick.
+    requestAnimationFrame(() => new Chart(canvas, {
+      type: "line",
+      data: { datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false, parsing: false, normalized: true,
+        interaction: { mode: "index", intersect: false },
+        scales: {
+          x: {
+            type: "linear", min: xs[0], max: xs[xs.length - 1],
+            ticks: { color: "#9aa3b2", callback: (v) => formatClock(v), maxTicksLimit: 12 },
+            grid: { color: "rgba(127,211,255,0.08)" },
+          },
+          y: {
+            beginAtZero: true,
+            ticks: { color: "#9aa3b2", callback: (v) => formatAmount(v) },
+            grid: { color: "rgba(255,255,255,0.06)" },
+            title: { display: true, text: chart.metric, color: "#9aa3b2" },
+          },
+        },
+        plugins: {
+          legend: { labels: { color: "#c9d1dc", boxWidth: 12, boxHeight: 2, font: { size: 11 } } },
+          tooltip: {
+            itemSort: (a, b) => b.parsed.y - a.parsed.y,
+            filter: (item) => item.parsed.y > 0,
+            callbacks: {
+              title: (items) => formatClock(items[0].parsed.x),
+              label: (item) => ` ${item.dataset.label}: ${formatAmount(item.parsed.y)} ${chart.metric}`,
+            },
+          },
+        },
+      },
+    }));
+
+    panel.append(renderRankTable(chart));
+    if (chart.series.length > CHART_LINES)
+      panel.append(el("p", "chart-note", `Graph shows the top ${CHART_LINES}; the table lists everyone. Click names in the legend to hide/show lines.`));
+    return panel;
+  }
+
+  function renderRankTable(chart) {
+    const grand = chart.series.reduce((sum, s) => sum + s.total, 0) || 1;
+    const max = chart.series[0]?.total || 1;
+    const table = el("table", "rank-table");
+    const head = el("tr");
+    for (const h of ["Name", "", "Amount", chart.metric]) head.append(el("th", "", h));
+    const thead = el("thead");
+    thead.append(head);
+    table.append(thead);
+    const body = el("tbody");
+    chart.series.forEach((s, i) => {
+      const row = el("tr");
+      const name = el("td", "rank-name", s.name);
+      name.style.color = colorFor(s, i);
+
+      const pct = el("td", "rank-pct", `${((s.total / grand) * 100).toFixed(2)}%`);
+      const barCell = el("td", "rank-bar");
+      const bar = el("span");
+      bar.style.width = `${(s.total / max) * 78}%`; // leave room for the amount beside the longest bar
+      bar.style.background = colorFor(s, i);
+      const amount = el("span", "rank-amount", formatAmount(s.total));
+      barCell.append(bar, amount);
+
+      const rate = el("td", "rank-rate", (s.total / Math.max(1, chart.durationSec)).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
+      row.append(name, pct, barCell, rate);
+      body.append(row);
+    });
+    table.append(body);
+    return table;
+  }
+
+  // ---- Wire up ------------------------------------------------------------------
 
   els.loginBtn.onclick = () => {
     location.href = `${API}/auth/login?returnUrl=${encodeURIComponent(location.href.split("#")[0])}`;

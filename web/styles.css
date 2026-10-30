@@ -120,12 +120,82 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
 
 .error { color: var(--error); }
 
-.result-question { margin: 0 0 12px; font-weight: 600; }
-.result-body { overflow-x: auto; }
-.result-body table { border-collapse: collapse; margin: 8px 0; font-size: 14px; }
-.result-body th, .result-body td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
-.result-body th { background: var(--chip); }
-.result-body code { background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
+/* ---- Conversation thread ---- */
+
+.thread-log > * + * { margin-top: 14px; }
+
+.msg-user {
+  margin: 0;
+  font-weight: 600;
+  padding-left: 10px;
+  border-left: 3px solid var(--accent);
+}
+.msg-user + .msg-user,
+.msg-assistant + .msg-user { margin-top: 22px; }
+
+.markdown { overflow-x: auto; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown table { border-collapse: collapse; margin: 8px 0; font-size: 14px; }
+.markdown th, .markdown td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+.markdown th { background: var(--chip); }
+.markdown code { background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
+
+.clarify {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px dashed var(--accent);
+  border-radius: 8px;
+}
+.clarify-question { margin: 0 0 10px; font-weight: 600; }
+.clarify .chips { margin-bottom: 0; }
+.chip.option { border-color: var(--accent); }
+.chip.option:disabled { opacity: 0.5; cursor: default; }
+
+.reply { display: flex; gap: 8px; margin-top: 16px; }
+.reply[hidden] { display: none; }
+.reply input { margin: 0; flex: 1; min-width: 0; }
+.btn.small { padding: 8px 14px; font-size: 14px; background: var(--accent); color: var(--accent-text); }
+
+.wcl-links { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; font-size: 13px; }
+.wcl-link { color: var(--accent); text-decoration: none; }
+.wcl-link:hover { text-decoration: underline; }
+
+/* ---- Warcraft Logs-style chart panel (always dark, like the site it mirrors) ---- */
+
+.chart-panel {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 8px;
+  background: #0b0d12;
+  border: 1px solid #222838;
+  color: #e3e7ee;
+}
+.chart-title { margin: 0 0 10px; font: 600 14px Inter, system-ui, sans-serif; color: #e3e7ee; }
+.chart-canvas { position: relative; height: 280px; }
+.chart-note { margin: 8px 0 0; font-size: 12px; color: #9aa3b2; }
+
+.rank-table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 13px; }
+.rank-table th {
+  text-align: left;
+  font-weight: 600;
+  color: #9aa3b2;
+  border-bottom: 1px solid #222838;
+  padding: 6px 8px;
+}
+.rank-table td { padding: 5px 8px; border-bottom: 1px solid #161b26; }
+.rank-name { font-weight: 600; white-space: nowrap; }
+.rank-pct, .rank-rate { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.rank-rate { color: #b8e986; }
+.rank-bar { width: 55%; position: relative; white-space: nowrap; }
+.rank-bar span:first-child { display: inline-block; height: 12px; border-radius: 2px; vertical-align: middle; opacity: 0.9; }
+.rank-amount { margin-left: 8px; font-variant-numeric: tabular-nums; color: #e3e7ee; }
+
+@media (max-width: 600px) {
+  .rank-pct { display: none; }
+  .rank-bar { width: 45%; }
+  .chart-canvas { height: 220px; }
+}
 
 .thinking { color: var(--muted); display: flex; align-items: center; gap: 10px; }
 .spinner {

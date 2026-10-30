@@ -14,6 +14,7 @@ builder.Services.Configure<DiscordAuthOptions>(config.GetSection(DiscordAuthOpti
 builder.Services.AddMemoryCache();
 builder.Services.AddHttpClient<WarcraftLogsClient>();
 builder.Services.AddHttpClient("discord");
+builder.Services.AddSingleton<ConversationStore>();
 builder.Services.AddSingleton<QueryEngine>();
 builder.Services.AddSingleton<DiscordAuth>();
 
@@ -107,14 +108,35 @@ app.MapPost("/api/ask", async (AskRequest req, DiscordAuth auth, QueryEngine eng
         return Results.BadRequest(new { error = "Paste a warcraftlogs.com report link or report code." });
 
     logger.LogInformation("{User} asked about {Report}: {Question}", user.Name, code, req.Question);
+    return await RunAsync(() => engine.AskAsync(user.Id, code, req.Question.Trim(), req.Fight ?? fight, ct), logger);
+}).RequireRateLimiting("ask");
+
+// Answers Claude's clarifying question, or asks a follow-up in the same conversation.
+app.MapPost("/api/ask/{conversationId}/reply", async (string conversationId, ReplyRequest req, DiscordAuth auth,
+    QueryEngine engine, HttpContext ctx, ILogger<Program> logger, CancellationToken ct) =>
+{
+    var user = auth.GetUser(ctx);
+    if (user is null) return Results.Unauthorized();
+
+    if (string.IsNullOrWhiteSpace(req.Message) || req.Message.Length > 500)
+        return Results.BadRequest(new { error = "Replies can be up to 500 characters." });
+
+    logger.LogInformation("{User} replied in {Conversation}: {Message}", user.Name, conversationId, req.Message);
+    return await RunAsync(() => engine.ReplyAsync(user.Id, conversationId, req.Message.Trim(), ct), logger);
+}).RequireRateLimiting("ask");
+
+app.Run();
+
+static async Task<IResult> RunAsync(Func<Task<QueryResult>> run, ILogger logger)
+{
     try
     {
-        var result = await engine.AskAsync(code, req.Question.Trim(), req.Fight ?? fight, ct);
-        logger.LogInformation("Answered with {Tools} tool calls, {In} in / {Out} out tokens",
-            result.ToolCalls.Count, result.InputTokens, result.OutputTokens);
+        var result = await run();
+        logger.LogInformation("{Status} with {Tools} tool calls, {In} in / {Out} out tokens",
+            result.Status, result.ToolCalls.Count, result.InputTokens, result.OutputTokens);
         return Results.Ok(result);
     }
-    catch (WarcraftLogsException ex)
+    catch (Exception ex) when (ex is WarcraftLogsException or ConversationNotFoundException)
     {
         return Results.BadRequest(new { error = ex.Message });
     }
@@ -124,8 +146,8 @@ app.MapPost("/api/ask", async (AskRequest req, DiscordAuth auth, QueryEngine eng
         return Results.Json(new { error = "The AI service is unavailable right now. Try again shortly." },
             statusCode: StatusCodes.Status502BadGateway);
     }
-}).RequireRateLimiting("ask");
-
-app.Run();
+}
 
 internal sealed record AskRequest(string? Report, string Question, int? Fight);
+
+internal sealed record ReplyRequest(string Message);

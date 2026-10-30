@@ -24,25 +24,29 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode)
         ["Summary", "Buffs", "Casts", "DamageDone", "DamageTaken", "Deaths", "Debuffs", "Dispels",
          "Healing", "Interrupts", "Resources", "Summons", "Survivability", "Threat"];
 
+    private static readonly string[] ChartDataTypes = ["DamageDone", "DamageTaken", "Healing"];
+
+    // Must stay below the arrays above: static initializers run in declaration order.
     public static IReadOnlyList<ToolUnion> Definitions { get; } = BuildDefinitions();
 
-    public async Task<string> ExecuteAsync(string name, IReadOnlyDictionary<string, JsonElement> input, CancellationToken ct)
+    public async Task<ToolOutput> ExecuteAsync(string name, IReadOnlyDictionary<string, JsonElement> input, CancellationToken ct)
     {
         var report = await wcl.GetReportAsync(reportCode, ct);
         var args = new ToolArgs(input);
-        var result = name switch
+        var output = name switch
         {
-            "get_report_overview" => Overview(report),
-            "find_abilities" => FindAbilities(report, args),
+            "get_report_overview" => new ToolOutput(Overview(report)),
+            "find_abilities" => new ToolOutput(FindAbilities(report, args)),
             "get_table" => await TableAsync(report, args, ct),
-            "get_events" => await EventsAsync(report, args, ct),
-            "count_events" => await CountEventsAsync(report, args, ct),
-            "get_pull_timeline" => await PullTimelineAsync(report, args, ct),
+            "get_events" => new ToolOutput(await EventsAsync(report, args, ct)),
+            "count_events" => new ToolOutput(await CountEventsAsync(report, args, ct)),
+            "get_pull_timeline" => new ToolOutput(await PullTimelineAsync(report, args, ct)),
+            "show_chart" => await ChartAsync(report, args, ct),
             _ => throw new ToolInputException($"Unknown tool '{name}'."),
         };
-        return result.Length <= MaxResultChars
-            ? result
-            : result[..MaxResultChars] + "\n…[truncated — narrow the time window or add filters]";
+        return output.Text.Length <= MaxResultChars
+            ? output
+            : output with { Text = output.Text[..MaxResultChars] + "\n…[truncated — narrow the time window or add filters]" };
     }
 
     // ---- get_report_overview -------------------------------------------------
@@ -106,17 +110,97 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode)
 
     // ---- get_table -----------------------------------------------------------
 
-    private async Task<string> TableAsync(Report report, ToolArgs args, CancellationToken ct)
+    private async Task<ToolOutput> TableAsync(Report report, ToolArgs args, CancellationToken ct)
     {
         var q = BuildQuery(report, args, TableDataTypes);
         var viewBy = args.OptionalString("view_by");
         if (viewBy is not null) q = q with { ViewBy = viewBy };
 
         var table = await wcl.GetTableAsync(reportCode, q, ct);
-        if (table is null) return "No table data.";
+        if (table is null) return new ToolOutput("No table data.");
         var pruned = Prune(table, depth: 0);
-        return $"{DescribeWindow(report, q)}\n{pruned?.ToJsonString()}";
+        return new ToolOutput($"{DescribeWindow(report, q)}\n{pruned?.ToJsonString()}", Link: LinkFor(report, q));
     }
+
+    // ---- show_chart ----------------------------------------------------------
+
+    private async Task<ToolOutput> ChartAsync(Report report, ToolArgs args, CancellationToken ct)
+    {
+        if (args.OptionalInt("fight_id") is null)
+            throw new ToolInputException("show_chart needs a single fight_id (a timeline can't span several pulls).");
+        var q = BuildQuery(report, args, ChartDataTypes);
+        var fight = report.GetFight(q.FightIds![0])!;
+        var title = args.OptionalString("title") ?? $"{q.DataType} — {fight.Name} (fight {fight.Id})";
+
+        var graph = await wcl.GetGraphAsync(reportCode, q, ct);
+        var series = new List<ChartSeries>();
+        double pointStart = q.StartTime, interval = 1000;
+        foreach (var s in graph?["series"]?.AsArray() ?? [])
+        {
+            if (s is null) continue;
+            pointStart = s["pointStart"]?.GetValue<double>() ?? pointStart;
+            interval = s["pointInterval"]?.GetValue<double>() ?? interval;
+            var points = s["data"]?.AsArray().Select(p => Math.Round(p?.GetValue<double>() ?? 0, 1)).ToList() ?? [];
+            series.Add(new ChartSeries(
+                s["name"]?.GetValue<string>() ?? "?",
+                s["type"]?.GetValue<string>() ?? "",
+                s["total"]?.GetValue<double>() ?? 0,
+                points));
+        }
+        if (series.Count == 0) return new ToolOutput("No data for that chart (nothing matched the filters).");
+
+        // Warcraft Logs adds its own (empty) "Total" series; the site draws a total line itself.
+        series = [.. series.Where(s => s.Name != "Total" && s.Total > 0).OrderByDescending(s => s.Total).Take(30)];
+        if (series.Count == 0) return new ToolOutput("No data for that chart (nothing matched the filters).");
+        var metric = q.DataType switch { "Healing" => "HPS", "DamageTaken" => "DTPS", _ => "DPS" };
+        var link = LinkFor(report, q);
+        var chart = new ChartData(
+            title,
+            metric,
+            StartSec: (pointStart - fight.StartTime) / 1000,
+            IntervalSec: interval / 1000,
+            DurationSec: (q.EndTime - q.StartTime) / 1000.0,
+            series,
+            link);
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"Chart shown to the user: \"{title}\" {DescribeWindow(report, q)}. Totals:");
+        foreach (var s in series.Take(15))
+            sb.AppendLine($"  {s.Name} ({s.Class}) {s.Total.ToString("N0", CultureInfo.InvariantCulture)}");
+        sb.AppendLine("The chart and its ranked table appear below your answer, so don't repeat the full list; refer to it as \"the chart below\".");
+        return new ToolOutput(sb.ToString(), chart, link);
+    }
+
+    private static readonly Dictionary<string, string> WclPageTypes = new()
+    {
+        ["Summary"] = "summary", ["DamageDone"] = "damage-done", ["DamageTaken"] = "damage-taken",
+        ["Healing"] = "healing", ["Casts"] = "casts", ["Deaths"] = "deaths", ["Interrupts"] = "interrupts",
+        ["Dispels"] = "dispels", ["Summons"] = "summons", ["Resources"] = "resources", ["Threat"] = "threat",
+    };
+
+    /// <summary>Deep link to the same view on warcraftlogs.com (single-fight queries only).</summary>
+    private static WclLink? LinkFor(Report report, ReportQuery q)
+    {
+        if (q.FightIds is not [var fightId] || !WclPageTypes.TryGetValue(q.DataType, out var type)) return null;
+        var fight = report.GetFight(fightId)!;
+
+        var url = new StringBuilder($"https://www.warcraftlogs.com/reports/{report.Code}?fight={fightId}&type={type}");
+        url.Append($"&start={q.StartTime}&end={q.EndTime}");
+        if (q.HostilityType == "Enemies") url.Append("&hostility=1");
+        if (q.SourceId is int s) url.Append($"&source={s}");
+        if (q.TargetId is int t) url.Append($"&target={t}");
+        if (q.AbilityId is long a) url.Append($"&ability={a}");
+
+        var label = new StringBuilder($"{q.DataType} · {fight.Name} (fight {fightId})");
+        if (q.TargetId is int tid) label.Append(" · ").Append(report.ActorName(tid));
+        label.Append($" · {FormatClock(q.StartTime - fight.StartTime)}–{FormatClock(q.EndTime - fight.StartTime)}");
+        // A phase-only filter is covered by start/end; anything else can't be carried into the URL.
+        if (!string.IsNullOrEmpty(q.FilterExpression) && !q.FilterExpression.StartsWith("encounterPhase = ", StringComparison.Ordinal))
+            label.Append(" (without the custom filter)");
+        return new WclLink(label.ToString(), url.ToString());
+    }
+
+    private static string FormatClock(long ms) => $"{ms / 60000}:{ms / 1000 % 60:00}";
 
     // ---- get_events ----------------------------------------------------------
 
@@ -252,13 +336,28 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode)
         else
             fights = [];
 
+        var phase = args.OptionalInt("phase");
         long start, end;
         if (fights.Count == 1)
         {
             var fight = fights[0];
-            start = args.OptionalDouble("start_sec") is double s ? fight.StartTime + (long)(s * 1000) : fight.StartTime;
-            end = args.OptionalDouble("end_sec") is double e ? Math.Min(fight.EndTime, fight.StartTime + (long)(e * 1000)) : fight.EndTime;
-            if (end <= start) throw new ToolInputException("end_sec must be after start_sec and inside the fight.");
+            start = fight.StartTime;
+            end = fight.EndTime;
+
+            // Narrow the window to the phase itself so charts and links cover just that phase.
+            var transitions = fight.PhaseTransitions.OrderBy(t => t.StartTime).ToList();
+            var idx = phase is int ph ? transitions.FindIndex(t => t.Id == ph) : -1;
+            if (phase is not null && transitions.Count > 0 && idx < 0)
+                throw new ToolInputException($"Fight {fight.Id} never reached phase {phase}.");
+            if (idx >= 0)
+            {
+                start = transitions[idx].StartTime;
+                end = idx + 1 < transitions.Count ? transitions[idx + 1].StartTime : fight.EndTime;
+            }
+
+            if (args.OptionalDouble("start_sec") is double s) start = Math.Max(start, fight.StartTime + (long)(s * 1000));
+            if (args.OptionalDouble("end_sec") is double e) end = Math.Min(end, fight.StartTime + (long)(e * 1000));
+            if (end <= start) throw new ToolInputException("The time window is empty: end_sec must be after start_sec and inside the fight/phase.");
         }
         else
         {
@@ -273,8 +372,8 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode)
             throw new ToolInputException("hostility must be Friendlies or Enemies.");
 
         var filter = args.OptionalString("filter_expression");
-        if (args.OptionalInt("phase") is int phase)
-            filter = CombineFilters(filter, $"encounterPhase = {phase}");
+        if (phase is int p)
+            filter = CombineFilters(filter, $"encounterPhase = {p}");
 
         return new ReportQuery
         {
@@ -511,6 +610,35 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode)
                         ("group_by", Prop(new { type = "string", @enum = new[] { "target", "source", "ability", "target_ability", "source_ability", "fight", "type" }, description = "Default target (the player affected)." })),
                         ("top", Prop(new { type = "integer", description = "Rows to return (default 25)." }))),
                     Required = ["data_type"],
+                },
+            },
+            new Tool
+            {
+                Name = "show_chart",
+                Description = """
+                    Show the user a Warcraft Logs-style chart: a line per player of DPS/HPS/damage-taken over time,
+                    plus a ranked table with totals, and a link to the same page on warcraftlogs.com.
+                    Use it alongside your answer when the question is about damage/healing/damage taken over a
+                    fight, phase or time window (e.g. 'who did the most damage to the Vipers in phase 1').
+                    One fight only. Returns the totals so you can refer to them.
+                    """,
+                InputSchema = new()
+                {
+                    Properties = new Dictionary<string, JsonElement>
+                    {
+                        ["title"] = Prop(new { type = "string", description = "Short chart title, e.g. 'Damage to Blightscale Viper — Phase 1, pull 29'." }),
+                        ["data_type"] = Prop(new { type = "string", @enum = ChartDataTypes }),
+                        ["fight_id"] = windowProps["fight_id"],
+                        ["phase"] = windowProps["phase"],
+                        ["start_sec"] = windowProps["start_sec"],
+                        ["end_sec"] = windowProps["end_sec"],
+                        ["hostility"] = windowProps["hostility"],
+                        ["ability_id"] = windowProps["ability_id"],
+                        ["source_id"] = windowProps["source_id"],
+                        ["target_id"] = windowProps["target_id"],
+                        ["filter_expression"] = windowProps["filter_expression"],
+                    },
+                    Required = ["title", "data_type", "fight_id"],
                 },
             },
             new Tool

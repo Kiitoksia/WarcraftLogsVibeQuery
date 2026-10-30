@@ -24,10 +24,11 @@ the Anthropic key and the Discord secret all live on the API.
 | Project | What it does |
 |---|---|
 | `src/WclQuery.Core/WarcraftLogs` | GraphQL client: OAuth client-credentials token, report metadata (cached), events (paged), tables |
-| `src/WclQuery.Core/Engine/ReportTools.cs` | The tools Claude can call: `get_report_overview`, `find_abilities`, `get_table`, `get_events`, `get_pull_timeline` |
-| `src/WclQuery.Core/Engine/QueryEngine.cs` | The Claude tool-use loop + system prompt |
-| `src/WclQuery.Api` | Minimal API: `/auth/*` (Discord), `/api/me`, `/api/ask` |
-| `src/WclQuery.Cli` | Developer harness: `find`, `tools <report>`, `ask <report> "<question>"`, `gql "<query>"` |
+| `src/WclQuery.Core/Engine/ReportTools.cs` | The tools Claude can call: `get_report_overview`, `find_abilities`, `get_table`, `get_events`, `count_events`, `show_chart`, `get_pull_timeline` |
+| `src/WclQuery.Core/Engine/QueryEngine.cs` | The Claude tool-use loop, system prompt, and the `ask_user` clarifying-question tool |
+| `src/WclQuery.Core/Engine/Conversation.cs` | In-memory conversations (30 min idle timeout) so Claude can ask questions and users can follow up |
+| `src/WclQuery.Api` | Minimal API: `/auth/*` (Discord), `/api/me`, `/api/ask`, `/api/ask/{conversationId}/reply` |
+| `src/WclQuery.Cli` | Developer harness: `find`, `tools <report>`, `tool <report> <name> '<json>'`, `ask <report> "<question>" [replies…]`, `gql "<query>"` |
 | `web/` | The static site deployed to GitHub Pages |
 
 ## Run it locally

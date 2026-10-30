@@ -81,6 +81,27 @@ public sealed class WarcraftLogsClient(
         }
         """;
 
+    private const string GraphQuery = """
+        query Graph($code: String!, $startTime: Float!, $endTime: Float!, $fightIDs: [Int],
+                    $dataType: GraphDataType, $hostilityType: HostilityType, $abilityID: Float,
+                    $sourceID: Int, $targetID: Int, $filterExpression: String) {
+          reportData {
+            report(code: $code) {
+              graph(startTime: $startTime, endTime: $endTime, fightIDs: $fightIDs,
+                    dataType: $dataType, hostilityType: $hostilityType, abilityID: $abilityID,
+                    sourceID: $sourceID, targetID: $targetID, filterExpression: $filterExpression)
+            }
+          }
+        }
+        """;
+
+    /// <summary>Per-actor time series (the line graph on Warcraft Logs table pages).</summary>
+    public async Task<JsonNode?> GetGraphAsync(string code, ReportQuery q, CancellationToken ct = default)
+    {
+        var data = await QueryAsync(GraphQuery, BuildVariables(code, q), ct);
+        return data["reportData"]?["report"]?["graph"]?["data"];
+    }
+
     public async Task<Report> GetReportAsync(string code, CancellationToken ct = default)
     {
         var report = await cache.GetOrCreateAsync($"wcl:report:{code}", async entry =>

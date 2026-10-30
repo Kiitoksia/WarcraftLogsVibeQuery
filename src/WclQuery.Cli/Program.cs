@@ -18,6 +18,7 @@ builder.Services.Configure<WarcraftLogsOptions>(builder.Configuration.GetSection
 builder.Services.Configure<QueryEngineOptions>(builder.Configuration.GetSection(QueryEngineOptions.SectionName));
 builder.Services.AddMemoryCache();
 builder.Services.AddHttpClient<WarcraftLogsClient>();
+builder.Services.AddSingleton<ConversationStore>();
 builder.Services.AddSingleton<QueryEngine>();
 using var host = builder.Build();
 
@@ -56,7 +57,7 @@ switch (command)
         {
             Console.WriteLine($"\n===== {name} {JsonSerializer.Serialize(input)} =====");
             var dict = JsonSerializer.SerializeToElement(input).EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone());
-            try { Console.WriteLine(await tools.ExecuteAsync(name, dict, default)); }
+            try { Console.WriteLine((await tools.ExecuteAsync(name, dict, default)).Text); }
             catch (Exception ex) { Console.WriteLine($"ERROR {ex.GetType().Name}: {ex.Message}"); }
         }
 
@@ -75,23 +76,46 @@ switch (command)
         var (code, _) = QueryEngine.ParseReport(args[1]) ?? throw new ArgumentException("Bad report code/URL.");
         var input = JsonDocument.Parse(args.ElementAtOrDefault(3) ?? "{}").RootElement
             .EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone());
-        Console.WriteLine(await new ReportTools(wcl, code).ExecuteAsync(args[2], input, default));
+        var output = await new ReportTools(wcl, code).ExecuteAsync(args[2], input, default);
+        Console.WriteLine(output.Text);
+        if (output.Link is not null) Console.WriteLine($"[link] {output.Link.Label}: {output.Link.Url}");
+        if (output.Chart is not null)
+            Console.WriteLine($"[chart] {output.Chart.Title}: {output.Chart.Series.Count} series × {output.Chart.Series[0].Points.Count} points, every {output.Chart.IntervalSec:0.###}s from {output.Chart.StartSec:0.#}s");
         break;
     }
 
     case "ask":
     {
+        // ask <report> "<question>" ["<reply or follow-up>" ...]
+        // Each extra argument answers Claude's clarifying question, or is sent as a follow-up.
         var (code, fight) = QueryEngine.ParseReport(args[1]) ?? throw new ArgumentException("Bad report code/URL.");
         var engine = host.Services.GetRequiredService<QueryEngine>();
-        var result = await engine.AskAsync(code, args[2], fight, default);
-        foreach (var t in result.ToolCalls)
-            Console.WriteLine($"[tool] {t.Name} {t.Input} ({t.ElapsedMs} ms){(t.Error is null ? "" : " ERROR: " + t.Error)}");
-        Console.WriteLine($"[tokens] {result.InputTokens} in / {result.OutputTokens} out\n");
-        Console.WriteLine(result.Answer);
+        var result = await engine.AskAsync("cli", code, args[2], fight, default);
+        Print(result);
+        foreach (var reply in args.Skip(3))
+        {
+            Console.WriteLine($"\n>>> {reply}\n");
+            result = await engine.ReplyAsync("cli", result.ConversationId, reply, default);
+            Print(result);
+        }
         break;
     }
 
     default:
-        Console.WriteLine("Usage: find [zoneId] | tools <report> | ask <report> \"<question>\" | gql \"<query>\"");
+        Console.WriteLine("Usage: find [zoneId] | tools <report> | tool <report> <name> '<json>' | ask <report> \"<question>\" [replies...] | gql \"<query>\"");
         break;
+}
+
+static void Print(QueryResult result)
+{
+    foreach (var t in result.ToolCalls)
+        Console.WriteLine($"[tool] {t.Name} {t.Input} ({t.ElapsedMs} ms){(t.Error is null ? "" : " ERROR: " + t.Error)}");
+    foreach (var c in result.Charts)
+        Console.WriteLine($"[chart] {c.Title} ({c.Metric}, {c.Series.Count} series)");
+    foreach (var l in result.Links)
+        Console.WriteLine($"[link] {l.Label}: {l.Url}");
+    Console.WriteLine($"[tokens] {result.InputTokens} in / {result.OutputTokens} out\n");
+    if (result.Answer is not null) Console.WriteLine(result.Answer);
+    if (result.Status == "question")
+        Console.WriteLine($"\n[QUESTION] {result.Question}\n[OPTIONS] {string.Join(" | ", result.Options)}");
 }
