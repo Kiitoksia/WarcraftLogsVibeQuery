@@ -7,7 +7,7 @@
   <meta name="description" content="Ask plain-English questions about a Warcraft Logs report.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
   <!-- Wowhead tooltips: hovering a wowhead.com/spell=… link shows the ability tooltip, like on Warcraft Logs. -->
   <script>const whTooltips = { colorLinks: true, iconizeLinks: true, renameLinks: false, iconSize: "small" };</script>
@@ -16,7 +16,7 @@
 <body>
   <header class="topbar">
     <div class="brand">
-      <span class="brand-mark" aria-hidden="true">◆</span>
+      <span class="brand-mark" aria-hidden="true">W</span>
       <h1>Warcraft Log Query Engine</h1>
     </div>
     <div class="topbar-actions">
@@ -25,47 +25,78 @@
     </div>
   </header>
 
-  <main>
-    <section id="login-panel" class="panel center" hidden>
-      <h2>Guild access only</h2>
-      <p>Log in with Discord to check you have access.</p>
-      <button id="login-btn" class="btn primary">Log in with Discord</button>
-      <p id="auth-error" class="error" hidden></p>
-    </section>
-
-    <!-- Collapsed version of the form, shown while a question is being answered. -->
-    <section id="ask-summary" class="panel ask-summary" hidden>
-      <span class="ask-summary-text">Report <code id="ask-summary-report"></code></span>
-      <button id="new-question-btn" class="btn small" type="button">New question</button>
-    </section>
-
-    <section id="ask-panel" class="panel" hidden>
-      <label for="report" class="field-label">Warcraft Logs report</label>
-      <input id="report" type="text" placeholder="https://www.warcraftlogs.com/reports/AbCdEf123456#fight=12" autocomplete="off" spellcheck="false">
-
-      <label for="question" class="field-label">Your question</label>
-      <textarea id="question" rows="3" maxlength="500" placeholder="Who did the most damage to the adds between 1:30 and 2:00 on the last pull?"></textarea>
-
-      <div class="chips" id="examples"></div>
-
-      <fieldset class="filters">
-        <legend class="field-label">Filters <span class="muted">(apply to every question)</span></legend>
-        <div class="filter">
-          <input type="checkbox" id="filter-deaths">
-          <label for="filter-deaths">Ignore events after</label>
-          <input type="number" id="filter-deaths-count" min="1" max="30" value="2" aria-label="Number of player deaths">
-          <label for="filter-deaths">player deaths in each pull</label>
-        </div>
-      </fieldset>
-
-      <div class="actions">
-        <span id="char-count" class="muted">0 / 500 · Ctrl+Enter to ask</span>
-        <button id="ask-btn" class="btn primary">Ask</button>
+  <div class="layout">
+    <section id="login-panel" class="login" hidden>
+      <div class="login-card">
+        <h2>Guild access only</h2>
+        <p>Log in with Discord to check you have access.</p>
+        <button id="login-btn" class="btn primary" type="button">Log in with Discord</button>
+        <p id="auth-error" class="error" hidden></p>
       </div>
     </section>
 
-    <section id="results" aria-live="polite"></section>
-  </main>
+    <aside id="sidebar" class="sidebar" hidden>
+      <section class="side-block">
+        <label for="report" class="side-label">Report</label>
+        <input id="report" type="text" placeholder="Paste a warcraftlogs.com report link" autocomplete="off" spellcheck="false">
+        <div id="report-summary" class="report-summary" hidden>
+          <span id="report-title" class="report-title"></span>
+          <span id="report-sub" class="muted small"></span>
+        </div>
+        <p id="report-status" class="muted small" hidden></p>
+      </section>
+
+      <section id="scope-block" class="side-block" hidden>
+        <div class="side-head">
+          <span class="side-label" id="scope-label">Ask about</span>
+          <span class="muted small">pick a pull to pin it</span>
+        </div>
+        <div id="scope-list" class="scope-list" role="radiogroup" aria-labelledby="scope-label"></div>
+        <button id="pulls-more" class="btn link small" type="button" hidden></button>
+      </section>
+
+      <section class="side-block">
+        <span class="side-label">Filters</span>
+        <div class="filter">
+          <input type="checkbox" id="filter-deaths">
+          <label for="filter-deaths">Ignore after</label>
+          <input type="number" id="filter-deaths-count" min="1" max="30" value="2" aria-label="Number of player deaths">
+          <label for="filter-deaths">deaths</label>
+        </div>
+      </section>
+
+      <section class="side-block">
+        <div class="side-head">
+          <span class="side-label">Recent</span>
+          <button id="clear-recent" class="btn link small" type="button" hidden>Clear</button>
+        </div>
+        <div id="recent-list" class="recent-list"><p class="muted small">Your questions appear here.</p></div>
+      </section>
+    </aside>
+
+    <main id="workspace" class="workspace" hidden>
+      <div id="thread" class="thread" aria-live="polite"></div>
+
+      <div id="empty-state" class="empty-state">
+        <h2>Ask about tonight's logs</h2>
+        <p>Paste a report link on the left, then ask in plain English, like "who got hit by waves the most?" or "who pressed Bloodlust on the last pull?".</p>
+      </div>
+
+      <div class="composer-wrap">
+        <div id="suggestions" class="chips" aria-label="Suggested questions"></div>
+        <form id="composer" class="composer">
+          <label for="question" class="visually-hidden">Ask a question</label>
+          <textarea id="question" rows="1" maxlength="500" placeholder="Ask a question about this report…"></textarea>
+          <button id="new-btn" class="btn ghost small" type="button" hidden>New question</button>
+          <button id="ask-btn" class="btn primary" type="submit">Ask</button>
+        </form>
+        <div class="composer-meta muted small">
+          <span id="char-count">0 / 500</span>
+          <span id="composer-mode">Enter to send · Shift+Enter for a new line</span>
+        </div>
+      </div>
+    </main>
+  </div>
 
   <dialog id="glossary-dialog" class="glossary-dialog">
     <div class="dialog-head">

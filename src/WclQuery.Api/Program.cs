@@ -104,6 +104,41 @@ app.MapGet("/auth/callback", async (string? code, string? state, string? error, 
 app.MapGet("/api/me", (DiscordAuth auth, HttpContext ctx) =>
     auth.GetUser(ctx) is { } user ? Results.Ok(user) : Results.Unauthorized());
 
+// Summary of a report for the sidebar: title, zone and its pulls (boss fights first-class, trash collapsed).
+app.MapGet("/api/report", async (string? code, DiscordAuth auth, WarcraftLogsClient wcl, HttpContext ctx, CancellationToken ct) =>
+{
+    if (auth.GetUser(ctx) is null) return Results.Unauthorized();
+    if (QueryEngine.ParseReport(code ?? "") is not var (reportCode, _))
+        return Results.BadRequest(new { error = "Paste a warcraftlogs.com report link or report code." });
+    try
+    {
+        var report = await wcl.GetReportAsync(reportCode, ct);
+        var pulls = report.Fights.Where(f => f.IsBoss).Select(f => new
+        {
+            id = f.Id,
+            name = f.Name,
+            kill = f.Kill == true,
+            // Boss health left when it ended (0 on a kill), from Warcraft Logs.
+            bossPercentage = f.Kill == true ? 0 : f.BossPercentage,
+            durationSec = Math.Round(f.DurationMs / 1000.0),
+        }).ToList();
+        var bosses = pulls.Select(p => p.name).Distinct().ToList();
+        return Results.Ok(new
+        {
+            code = report.Code,
+            title = report.Title,
+            zone = report.Zone?.Name,
+            bosses,
+            pulls,
+            trashFights = report.Fights.Count(f => !f.IsBoss),
+        });
+    }
+    catch (WarcraftLogsException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
 // ---- Glossary (everyone can read; officers and listed editors can edit) ----------------------------
 
 app.MapGet("/api/glossary", (DiscordAuth auth, GlossaryStore glossary, HttpContext ctx) =>
@@ -168,7 +203,7 @@ app.MapPost("/api/ask", async (AskRequest req, DiscordAuth auth, QueryEngine eng
         return Results.BadRequest(new { error = "Paste a warcraftlogs.com report link or report code." });
 
     if (ToSettings(req.Settings) is not { } settings)
-        return Results.BadRequest(new { error = "The death cutoff must be between 1 and 30." });
+        return Results.BadRequest(new { error = "Invalid settings: the death cutoff must be 1-30 and the pull a valid fight." });
 
     logger.LogInformation("{User} asked about {Report}: {Question}", user.Name, code, req.Question);
     return await RunAsync(() => engine.AskAsync(user.Id, code, req.Question.Trim(), req.Fight ?? fight, settings, ct), logger);
@@ -185,7 +220,7 @@ app.MapPost("/api/ask/{conversationId}/reply", async (string conversationId, Rep
         return Results.BadRequest(new { error = "Replies can be up to 500 characters." });
 
     if (ToSettings(req.Settings) is not { } settings)
-        return Results.BadRequest(new { error = "The death cutoff must be between 1 and 30." });
+        return Results.BadRequest(new { error = "Invalid settings: the death cutoff must be 1-30 and the pull a valid fight." });
 
     logger.LogInformation("{User} replied in {Conversation}: {Message}", user.Name, conversationId, req.Message);
     return await RunAsync(() => engine.ReplyAsync(user.Id, conversationId, req.Message.Trim(), settings, ct), logger);
@@ -198,12 +233,13 @@ static bool IsModelServiceError(Exception ex) =>
     ex is Anthropic.Exceptions.AnthropicApiException or System.ClientModel.ClientResultException;
 
 // Null means the settings were invalid.
-static QuerySettings? ToSettings(SettingsDto? dto) => dto?.DeathCutoff switch
+static QuerySettings? ToSettings(SettingsDto? dto)
 {
-    null => QuerySettings.None,
-    >= 1 and <= 30 and var n => new QuerySettings { DeathCutoff = n },
-    _ => null,
-};
+    if (dto is null) return QuerySettings.None;
+    if (dto.DeathCutoff is < 1 or > 30) return null;
+    if (dto.Pull is < 1) return null;
+    return new QuerySettings { DeathCutoff = dto.DeathCutoff, Pull = dto.Pull, AllPulls = dto.Pull is null && dto.AllPulls == true };
+}
 
 static async Task<IResult> RunAsync(Func<Task<QueryResult>> run, ILogger logger)
 {
@@ -228,7 +264,7 @@ static async Task<IResult> RunAsync(Func<Task<QueryResult>> run, ILogger logger)
     }
 }
 
-internal sealed record SettingsDto(int? DeathCutoff);
+internal sealed record SettingsDto(int? DeathCutoff, int? Pull, bool? AllPulls);
 
 internal sealed record GlossaryUpdate(string? Text);
 

@@ -3,14 +3,16 @@
   const TOKEN_KEY = "wclq_token";
   const REPORT_KEY = "wclq_report";
   const FILTERS_KEY = "wclq_filters";
+  const RECENT_KEY = "wclq_recent";
+  const MAX_RECENT = 8;
+  const PULLS_SHOWN = 8;
 
   const EXAMPLES = [
-    "Who pressed Bloodlust on the last pull, and when?",
-    "Who ninja pulled the boss on the last pull?",
-    "Who did the most damage to the adds in phase 1 of the last pull?",
-    "Who died first most often tonight, and to what?",
+    "Who pressed Bloodlust on the last pull?",
+    "Who ninja pulled the boss?",
+    "Who did the most damage to the adds in phase 1?",
+    "Who died first most often tonight?",
     "Who interrupted the most on the last pull?",
-    "Who took the most avoidable damage on the last pull?",
   ];
 
   // Standard WoW class colours, as used on Warcraft Logs.
@@ -24,13 +26,18 @@
 
   const $ = (id) => document.getElementById(id);
   const els = {
-    userArea: $("user-area"), loginPanel: $("login-panel"), loginBtn: $("login-btn"),
-    authError: $("auth-error"), askPanel: $("ask-panel"), report: $("report"),
-    question: $("question"), examples: $("examples"), askBtn: $("ask-btn"),
-    charCount: $("char-count"), results: $("results"),
+    userArea: $("user-area"), glossaryBtn: $("glossary-btn"),
+    loginPanel: $("login-panel"), loginBtn: $("login-btn"), authError: $("auth-error"),
+    sidebar: $("sidebar"), workspace: $("workspace"),
+    report: $("report"), reportSummary: $("report-summary"), reportTitle: $("report-title"),
+    reportSub: $("report-sub"), reportStatus: $("report-status"),
+    scopeBlock: $("scope-block"), scopeList: $("scope-list"), pullsMore: $("pulls-more"),
     deathsOn: $("filter-deaths"), deathsCount: $("filter-deaths-count"),
-    askSummary: $("ask-summary"), askSummaryReport: $("ask-summary-report"), newQuestionBtn: $("new-question-btn"),
-    glossaryBtn: $("glossary-btn"), glossaryDialog: $("glossary-dialog"), glossaryClose: $("glossary-close"),
+    recentList: $("recent-list"), clearRecent: $("clear-recent"),
+    thread: $("thread"), emptyState: $("empty-state"), suggestions: $("suggestions"),
+    composer: $("composer"), question: $("question"), askBtn: $("ask-btn"), newBtn: $("new-btn"),
+    charCount: $("char-count"), composerMode: $("composer-mode"),
+    glossaryDialog: $("glossary-dialog"), glossaryClose: $("glossary-close"),
     glossaryMeta: $("glossary-meta"), glossaryView: $("glossary-view"), glossaryEditor: $("glossary-editor"),
     glossaryError: $("glossary-error"), glossaryEdit: $("glossary-edit"), glossaryCancel: $("glossary-cancel"),
     glossarySave: $("glossary-save"), glossaryAi: $("glossary-ai"), glossaryNote: $("glossary-note"),
@@ -39,7 +46,7 @@
 
   const storage = {
     get(k) { try { return localStorage.getItem(k); } catch { return null; } },
-    set(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
+    set(k, v) { try { localStorage.setItem(k, v); return true; } catch { return false; } },
     remove(k) { try { localStorage.removeItem(k); } catch { /* private mode */ } },
   };
 
@@ -54,7 +61,17 @@
   const scrollTo = (node, block = "start") =>
     node.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block });
 
-  // ---- Auth -------------------------------------------------------------------
+  // ---- App state ------------------------------------------------------------------
+
+  const state = {
+    reportInfo: null,      // summary from /api/report
+    scope: { kind: "auto" }, // "auto" | "all" | { kind: "pull", id }
+    showAllPulls: false,
+    thread: null,          // the conversation on screen
+    busy: false,
+  };
+
+  // ---- Auth -----------------------------------------------------------------------
 
   // The API redirects back with #token=... or #authError=... after Discord login.
   function consumeAuthFragment() {
@@ -79,8 +96,8 @@
 
   function showLogin(error) {
     els.loginPanel.hidden = false;
-    els.askPanel.hidden = true;
-    els.askSummary.hidden = true;
+    els.sidebar.hidden = true;
+    els.workspace.hidden = true;
     els.glossaryBtn.hidden = true;
     els.userArea.replaceChildren();
     els.authError.hidden = !error;
@@ -89,18 +106,22 @@
 
   function showApp(user) {
     els.loginPanel.hidden = true;
-    els.askPanel.hidden = false;
+    els.sidebar.hidden = false;
+    els.workspace.hidden = false;
     els.glossaryBtn.hidden = false;
     const logout = el("button", "btn link", "Log out");
     logout.onclick = () => { storage.remove(TOKEN_KEY); showLogin(); };
-    els.userArea.replaceChildren(el("span", "", user.name), logout);
+    els.userArea.replaceChildren(el("span", "user-name", user.name), logout);
+
     els.report.value = storage.get(REPORT_KEY) || "";
+    renderRecent();
+    renderSuggestions(EXAMPLES);
+    if (els.report.value) loadReport();
     els.question.focus();
   }
 
   async function init() {
     const authError = consumeAuthFragment();
-    renderExamples();
     loadFilters();
     if (authError) return showLogin(authError);
     try {
@@ -113,16 +134,116 @@
     }
   }
 
-  // ---- Filters ------------------------------------------------------------------
+  // ---- Report & scope ------------------------------------------------------------
 
-  // Filters are sent with every message; the server applies them to all of the AI's lookups.
-  function currentSettings() {
-    const n = Math.round(Number(els.deathsCount.value));
-    return { deathCutoff: els.deathsOn.checked && n >= 1 && n <= 30 ? n : null };
+  let reportTimer = null;
+  let reportRequest = 0;
+
+  function reportCode(value) {
+    return (value || "").match(/reports\/(?:a:)?([A-Za-z0-9]+)/)?.[1] || (value || "").trim();
   }
 
-  function describeSettings(settings) {
-    return settings.deathCutoff ? `Ignoring events after ${settings.deathCutoff} player deaths` : null;
+  async function loadReport() {
+    const value = els.report.value.trim();
+    const requestId = ++reportRequest;
+    state.reportInfo = null;
+    els.reportSummary.hidden = true;
+    els.scopeBlock.hidden = true;
+    if (!value) { els.reportStatus.hidden = true; return; }
+
+    els.reportStatus.hidden = false;
+    els.reportStatus.textContent = "Loading report…";
+    try {
+      const res = await api(`/api/report?code=${encodeURIComponent(value)}`);
+      if (requestId !== reportRequest) return; // a newer report was typed meanwhile
+      if (res.status === 401) { storage.remove(TOKEN_KEY); showLogin("Your login expired. Please log in again."); return; }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { els.reportStatus.textContent = data.error || "Couldn't load that report."; return; }
+
+      storage.set(REPORT_KEY, value);
+      state.reportInfo = data;
+      els.reportStatus.hidden = true;
+      els.reportTitle.textContent = data.title || data.code;
+      const pulls = data.pulls || [];
+      const kills = pulls.filter((p) => p.kill).length;
+      const best = pulls.filter((p) => !p.kill && p.bossPercentage != null)
+        .reduce((min, p) => Math.min(min, Number(p.bossPercentage.toFixed(1))), Infinity);
+      const bossText = data.bosses?.length === 1 ? data.bosses[0] : `${data.bosses?.length || 0} bosses`;
+      const progress = kills > 0 ? `${kills} kill${kills === 1 ? "" : "s"}` : best < Infinity ? `best ${best}%` : "";
+      els.reportSub.textContent = [bossText, `${pulls.length} pull${pulls.length === 1 ? "" : "s"}`, progress].filter(Boolean).join(" · ");
+      els.reportSummary.hidden = false;
+      renderScope();
+    } catch {
+      if (requestId === reportRequest) els.reportStatus.textContent = "Couldn't reach the server.";
+    }
+  }
+
+  function scopeKey(scope) {
+    return scope.kind === "pull" ? `pull:${scope.id}` : scope.kind;
+  }
+
+  function setScope(scope) {
+    if (scopeKey(scope) === scopeKey(state.scope)) return;
+    state.scope = scope;
+    renderScope();
+    startFresh(); // a different pinned scope starts a new conversation
+  }
+
+  function renderScope() {
+    const info = state.reportInfo;
+    if (!info) return;
+    const pulls = [...(info.pulls || [])].reverse(); // newest first
+    const multipleBosses = (info.bosses?.length || 0) > 1;
+    const shown = state.showAllPulls ? pulls : pulls.slice(0, PULLS_SHOWN);
+
+    const option = (scope, content, title) => {
+      const selected = scopeKey(scope) === scopeKey(state.scope);
+      const b = el("button", `scope-option${selected ? " selected" : ""}`);
+      b.type = "button";
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-checked", String(selected));
+      if (title) b.title = title;
+      b.append(...content);
+      b.onclick = () => setScope(scope);
+      return b;
+    };
+
+    const items = [
+      option({ kind: "auto" }, [el("span", "scope-name", "Let the AI decide"), el("span", "scope-hint", "last pull, or all for \"tonight\"")]),
+      option({ kind: "all" }, [el("span", "scope-name", `All ${pulls.length} pulls`)]),
+    ];
+    for (const p of shown) {
+      const progress = p.kill ? 100 : Math.max(0, 100 - (p.bossPercentage ?? 100));
+      const bar = el("span", "pull-bar");
+      const fill = el("span", `pull-fill${p.kill ? " kill" : ""}`);
+      fill.style.width = `${progress}%`;
+      bar.append(fill);
+      const pct = p.bossPercentage == null ? "?" : Number(p.bossPercentage).toFixed(1);
+      const label = el("span", "pull-result", p.kill ? "Kill" : `${pct}%`);
+      const name = el("span", "pull-id", `#${p.id}`);
+      const content = multipleBosses ? [name, el("span", "pull-boss", p.name), label] : [name, bar, label];
+      items.push(option({ kind: "pull", id: p.id }, content, `${p.name}, pull ${p.id}: ${p.kill ? "kill" : `wipe at ${pct}%`}`));
+    }
+    els.scopeList.replaceChildren(...items);
+    els.pullsMore.hidden = pulls.length <= PULLS_SHOWN;
+    els.pullsMore.textContent = state.showAllPulls ? "Show fewer pulls" : `Show all ${pulls.length} pulls`;
+    els.scopeBlock.hidden = false;
+  }
+
+  // ---- Filters ----------------------------------------------------------------------
+
+  // Sent with every message: the pinned scope and filters. The server applies filters to every lookup.
+  function currentSettings() {
+    const n = Math.round(Number(els.deathsCount.value));
+    return {
+      deathCutoff: els.deathsOn.checked && n >= 1 && n <= 30 ? n : null,
+      pull: state.scope.kind === "pull" ? state.scope.id : null,
+      allPulls: state.scope.kind === "all",
+    };
+  }
+
+  function describeFilters(settings) {
+    return settings.deathCutoff ? `ignoring events after ${settings.deathCutoff} deaths` : null;
   }
 
   function loadFilters() {
@@ -139,49 +260,331 @@
     els.deathsCount.disabled = !els.deathsOn.checked;
   }
 
-  // ---- Ask form -----------------------------------------------------------------
+  // ---- Recent questions (kept in this browser) -------------------------------------
 
-  function renderExamples() {
-    for (const text of EXAMPLES) {
-      const chip = el("button", "chip", text);
-      chip.type = "button";
-      chip.onclick = () => { els.question.value = text; updateCount(); els.question.focus(); };
-      els.examples.append(chip);
+  function loadRecent() {
+    try { return JSON.parse(storage.get(RECENT_KEY) || "[]"); } catch { return []; }
+  }
+
+  function saveRecent(list) {
+    // Charts make entries large; drop the oldest until it fits the browser's storage.
+    let trimmed = list.slice(0, MAX_RECENT);
+    while (trimmed.length && !storage.set(RECENT_KEY, JSON.stringify(trimmed))) trimmed = trimmed.slice(0, -1);
+  }
+
+  function rememberThread(thread) {
+    const list = loadRecent().filter((r) => r.key !== thread.key);
+    list.unshift({
+      key: thread.key,
+      conversationId: thread.conversationId,
+      report: thread.report,
+      title: thread.entries[0]?.question || "Question",
+      at: Date.now(),
+      entries: thread.entries,
+    });
+    saveRecent(list);
+    renderRecent();
+  }
+
+  function renderRecent() {
+    const list = loadRecent();
+    els.clearRecent.hidden = list.length === 0;
+    if (!list.length) {
+      els.recentList.replaceChildren(el("p", "muted small", "Your questions appear here."));
+      return;
+    }
+    els.recentList.replaceChildren(...list.map((r) => {
+      const b = el("button", `recent-item${state.thread?.key === r.key ? " current" : ""}`);
+      b.type = "button";
+      b.append(el("span", "recent-title", r.title), el("span", "recent-meta", `${reportCode(r.report)} · ${timeAgo(r.at)}`));
+      b.onclick = () => openRecent(r);
+      return b;
+    }));
+  }
+
+  function timeAgo(t) {
+    const mins = Math.round((Date.now() - t) / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.round(mins / 60);
+    return hours < 24 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`;
+  }
+
+  function openRecent(r) {
+    if (state.busy) return;
+    if (reportCode(r.report) !== reportCode(els.report.value)) {
+      els.report.value = r.report;
+      loadReport();
+    }
+    state.thread = new Thread(r.report, r);
+    renderSuggestions(r.entries?.at(-1)?.data?.followUps || []);
+    updateComposer();
+    renderRecent();
+    scrollTo(els.thread);
+  }
+
+  // ---- Conversation --------------------------------------------------------------
+
+  // One conversation on screen at a time. Typing continues it; "New question", a different report
+  // or a different pinned pull starts a new one (the old one stays in Recent).
+  class Thread {
+    constructor(report, saved) {
+      this.report = report;
+      this.key = saved?.key || `t${Date.now()}`;
+      this.conversationId = saved?.conversationId || null;
+      this.entries = [];
+      els.thread.replaceChildren();
+      for (const entry of saved?.entries || []) this.renderEntry(entry);
+      this.entries = saved?.entries ? [...saved.entries] : [];
+      updateComposer();
+    }
+
+    async send(text, { asNew = false } = {}) {
+      if (state.busy) return;
+      state.busy = true;
+      updateComposer();
+
+      const settings = currentSettings();
+      const entry = { question: text, filters: describeFilters(settings) };
+      const { block, scopeLine } = this.renderQuestion(entry);
+      const pending = el("p", "thinking");
+      const status = el("span", "", "Reading the logs…");
+      pending.append(el("span", "spinner"), status);
+      els.thread.append(pending);
+      requestAnimationFrame(() => scrollTo(block));
+      const started = Date.now();
+      const timer = setInterval(() => {
+        const s = Math.round((Date.now() - started) / 1000);
+        status.textContent = s < 25 ? `Reading the logs… ${s}s` : `Still digging (big questions take a while)… ${s}s`;
+      }, 1000);
+
+      try {
+        let res;
+        try {
+          res = this.conversationId && !asNew
+            ? await api(`/api/ask/${encodeURIComponent(this.conversationId)}/reply`, {
+                method: "POST", body: JSON.stringify({ message: text, settings }),
+              })
+            : await api("/api/ask", {
+                method: "POST", body: JSON.stringify({ report: this.report, question: text, settings }),
+              });
+        } catch {
+          this.error("Couldn't reach the server.");
+          return;
+        } finally {
+          clearInterval(timer);
+          pending.remove();
+        }
+
+        if (res.status === 401) { storage.remove(TOKEN_KEY); showLogin("Your login expired. Please log in again."); return; }
+        if (res.status === 429) { this.error("You've hit the hourly question limit. Try again later."); return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          // The server forgets conversations after 30 idle minutes: carry on as a fresh question.
+          if (this.conversationId && !asNew && /expired/i.test(data.error || "")) {
+            block.remove();
+            this.notice("That conversation expired, so this was asked as a new question.");
+            state.busy = false;
+            this.conversationId = null;
+            return await this.send(text, { asNew: true }); // await, so our finally runs after the retry
+          }
+          this.error(data.error || "Something went wrong answering that.");
+          return;
+        }
+
+        this.conversationId = data.conversationId;
+        entry.data = data;
+        this.entries.push(entry);
+        try {
+          scopeLine.textContent = scopeText(data, entry);
+          const answer = this.renderAnswer(data);
+          requestAnimationFrame(() => scrollTo(answer));
+        } catch (err) {
+          console.error("Failed to render answer", err, data);
+          this.error("Got an answer but couldn't display it.");
+        }
+        rememberThread(this);
+      } finally {
+        state.busy = false;
+        updateComposer();
+      }
+    }
+
+    renderEntry(entry) {
+      const { scopeLine } = this.renderQuestion(entry);
+      if (entry.data) scopeLine.textContent = scopeText(entry.data, entry);
+      if (entry.data) this.renderAnswer(entry.data, { replay: true });
+    }
+
+    renderQuestion(entry) {
+      els.emptyState.hidden = true;
+      const block = el("div", "msg-user");
+      block.append(el("p", "msg-user-text", entry.question));
+      const scopeLine = el("p", "msg-scope", entry.filters ? entry.filters : "");
+      block.append(scopeLine);
+      els.thread.append(block);
+      return { block, scopeLine };
+    }
+
+    renderAnswer(data, { replay = false } = {}) {
+      const card = el("article", "answer");
+      if (data.answer) {
+        const body = el("div", "markdown");
+        body.innerHTML = DOMPurify.sanitize(marked.parse(data.answer));
+        decorateMarkdown(body, data.players);
+        card.append(body);
+      }
+
+      for (const chart of data.charts || []) card.append(renderChart(chart));
+
+      if (data.status === "question") card.append(this.renderClarify(data, replay));
+
+      const footer = el("div", "answer-footer");
+      if (data.usage) {
+        const u = data.usage;
+        const tokens = u.input + u.cacheRead + u.cacheWrite + u.output;
+        let usage = `${data.toolCalls?.length || 0} lookup${data.toolCalls?.length === 1 ? "" : "s"} · ${(tokens / 1000).toFixed(1)}k tokens`;
+        if (u.estimatedCostUsd != null) usage += ` · ≈$${u.estimatedCostUsd.toFixed(3)}`;
+        footer.append(el("span", "", usage));
+      }
+      for (const link of data.links || []) {
+        const a = el("a", "wcl-link");
+        a.append(el("span", "wcl-badge", "WCL"), el("span", "", link.label));
+        a.href = link.url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        footer.append(a);
+      }
+      if (data.toolCalls?.length) footer.append(renderTrace(data.toolCalls));
+      card.append(footer);
+
+      els.thread.append(card);
+      refreshTooltips();
+
+      if (!replay) {
+        if (data.status === "question") {
+          renderSuggestions([]);
+          els.question.placeholder = data.options?.length ? "…or type your own answer" : "Type your answer";
+          els.question.focus({ preventScroll: true });
+        } else {
+          renderSuggestions(data.followUps || []);
+          els.question.placeholder = "Ask a follow-up, or a new question about this report…";
+        }
+      }
+      return card;
+    }
+
+    renderClarify(data, replay) {
+      const q = el("div", "clarify");
+      q.append(el("p", "clarify-label", "Quick question"));
+      const qText = el("div", "clarify-question markdown");
+      qText.innerHTML = DOMPurify.sanitize(marked.parseInline(data.question || ""));
+      decorateMarkdown(qText, data.players);
+      q.append(qText);
+      if (data.options?.length) {
+        const opts = el("div", "chips");
+        for (const option of data.options) {
+          const label = typeof option === "string" ? option : option.label;
+          let b;
+          if (option.spellId) {
+            // Ability options are Wowhead links styled as buttons: Wowhead's script only adds its icon and
+            // hover tooltip to links. Clicking still answers instead of opening Wowhead.
+            b = el("a", "chip option", label);
+            b.href = `https://www.wowhead.com/spell=${option.spellId}`;
+            b.setAttribute("role", "button");
+          } else {
+            b = el("button", "chip option", label);
+            b.type = "button";
+          }
+          const letMeType = /something else|\bother\b|type it|i'll type|let me type|own answer/i.test(label);
+          b.onclick = (e) => {
+            e.preventDefault();
+            if (b.classList.contains("disabled")) return;
+            if (letMeType) { els.question.focus(); return; }
+            disableOptions(q);
+            this.send(label);
+          };
+          opts.append(b);
+        }
+        if (replay) disableOptions(opts);
+        q.append(opts);
+      }
+      return q;
+    }
+
+    notice(message) {
+      els.thread.append(el("p", "notice", message));
+    }
+
+    error(message) {
+      els.thread.append(el("p", "error", message));
     }
   }
 
-  function updateCount() {
-    els.charCount.textContent = `${els.question.value.length} / 500 · Ctrl+Enter to ask`;
+  // The line under a question: what the answer covered ("All 29 pulls · Phase 1") plus any filters.
+  function scopeText(data, entry) {
+    const scope = data.scope || (data.status === "answer" && !data.toolCalls?.length ? "From the previous answer" : null);
+    return [scope, entry.filters].filter(Boolean).join(" · ");
   }
 
-  // While a question is answered, fold the form into a one-line bar so the answer gets the screen.
-  function collapseForm(report) {
-    const code = report.match(/reports\/(?:a:)?([A-Za-z0-9]+)/)?.[1] || report;
-    els.askSummaryReport.textContent = code;
-    els.askPanel.hidden = true;
-    els.askSummary.hidden = false;
+  function disableOptions(root) {
+    for (const b of root.querySelectorAll(".option")) {
+      b.disabled = true;
+      b.classList.add("disabled");
+      b.setAttribute("aria-disabled", "true");
+    }
   }
 
-  function expandForm() {
-    els.askSummary.hidden = true;
-    els.askPanel.hidden = false;
-    els.question.value = "";
-    updateCount();
-    scrollTo(els.askPanel);
-    els.question.focus({ preventScroll: true });
+  function startFresh() {
+    state.thread = null;
+    els.thread.replaceChildren();
+    els.emptyState.hidden = false;
+    els.question.placeholder = "Ask a question about this report…";
+    renderSuggestions(EXAMPLES);
+    renderRecent();
+    updateComposer();
   }
 
   function ask() {
-    const question = els.question.value.trim();
+    const text = els.question.value.trim();
     const report = els.report.value.trim();
     if (!report) { els.report.focus(); return; }
-    if (!question) { els.question.focus(); return; }
+    if (!text || state.busy) { els.question.focus(); return; }
     storage.set(REPORT_KEY, report);
-    collapseForm(report);
-    new Thread(report).send(question);
+    if (!state.thread || reportCode(state.thread.report) !== reportCode(report)) state.thread = new Thread(report);
+    els.question.value = "";
+    autoGrow();
+    updateCount();
+    state.thread.send(text);
   }
 
-  // ---- Answer decoration --------------------------------------------------------
+  function renderSuggestions(list) {
+    els.suggestions.replaceChildren(...list.map((text) => {
+      const chip = el("button", "chip", text);
+      chip.type = "button";
+      chip.onclick = () => { els.question.value = text; updateCount(); ask(); };
+      return chip;
+    }));
+  }
+
+  function updateComposer() {
+    els.askBtn.disabled = state.busy;
+    els.newBtn.hidden = !state.thread;
+    els.composerMode.textContent = state.thread
+      ? "Continues this conversation · New question to start over"
+      : "Enter to send · Shift+Enter for a new line";
+  }
+
+  function updateCount() {
+    els.charCount.textContent = `${els.question.value.length} / 500`;
+  }
+
+  function autoGrow() {
+    els.question.style.height = "auto";
+    els.question.style.height = `${Math.min(els.question.scrollHeight, 160)}px`;
+  }
+
+  // ---- Answer decoration -----------------------------------------------------------
 
   // Wrap player names in the answer with their class colour, like Warcraft Logs does.
   function colourPlayers(root, players) {
@@ -210,7 +613,6 @@
         const span = el("span", "player", m[0]);
         const cls = classOf.get(m[0].toLocaleLowerCase());
         span.style.color = CLASS_COLORS[cls] || "";
-        span.dataset.class = cls || "";
         frag.append(span);
         last = m.index + m[0].length;
       }
@@ -233,190 +635,9 @@
     try { window.WH?.Tooltips?.refreshLinks?.(); } catch { /* older/newer script versions */ }
   }
 
-  // ---- Conversation thread ------------------------------------------------------
-
-  // One card per conversation: the question, the AI's answers/questions, and a reply box.
-  class Thread {
-    constructor(report) {
-      this.report = report;
-      this.conversationId = null;
-      this.busy = false;
-
-      this.card = el("article", "panel thread");
-      this.log = el("div", "thread-log");
-      this.replyForm = el("form", "reply");
-      this.replyInput = el("input");
-      this.replyInput.maxLength = 500;
-      this.replyInput.placeholder = "Ask a follow-up…";
-      const send = el("button", "btn small", "Send");
-      this.replyForm.append(this.replyInput, send);
-      this.replyForm.hidden = true;
-      this.replyForm.onsubmit = (e) => {
-        e.preventDefault();
-        const text = this.replyInput.value.trim();
-        if (text) this.send(text);
-      };
-
-      this.card.append(this.log, this.replyForm);
-      els.results.prepend(this.card);
-      requestAnimationFrame(() => scrollTo(this.card));
-    }
-
-    async send(text) {
-      if (this.busy) return;
-      this.busy = true;
-      els.askBtn.disabled = true;
-      this.replyForm.hidden = true;
-      this.replyInput.value = "";
-      this.disableOptions();
-
-      const settings = currentSettings();
-      this.log.append(el("p", "msg-user", text));
-      const filterNote = describeSettings(settings);
-      if (filterNote) this.log.append(el("p", "msg-filters", `Filter: ${filterNote}`));
-
-      const pending = el("p", "thinking");
-      const status = el("span", "", "Reading the logs…");
-      pending.append(el("span", "spinner"), status);
-      this.log.append(pending);
-      if (this.conversationId) scrollTo(pending, "nearest");
-      const started = Date.now();
-      const timer = setInterval(() => {
-        const s = Math.round((Date.now() - started) / 1000);
-        status.textContent = s < 25 ? `Reading the logs… ${s}s` : `Still digging (big questions take a while)… ${s}s`;
-      }, 1000);
-
-      try {
-        let res;
-        try {
-          res = this.conversationId
-            ? await api(`/api/ask/${encodeURIComponent(this.conversationId)}/reply`, {
-                method: "POST", body: JSON.stringify({ message: text, settings }),
-              })
-            : await api("/api/ask", {
-                method: "POST", body: JSON.stringify({ report: this.report, question: text, settings }),
-              });
-        } catch {
-          this.error("Couldn't reach the server.");
-          return;
-        } finally {
-          clearInterval(timer);
-          pending.remove();
-        }
-
-        if (res.status === 401) { storage.remove(TOKEN_KEY); showLogin("Your login expired. Please log in again."); return; }
-        if (res.status === 429) { this.error("You've hit the hourly question limit. Try again later."); return; }
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) { this.error(data.error || "Something went wrong answering that."); return; }
-
-        this.conversationId = data.conversationId;
-        try {
-          const block = this.render(data);
-          requestAnimationFrame(() => scrollTo(block));
-        } catch (err) {
-          console.error("Failed to render answer", err, data);
-          this.error("Got an answer but couldn't display it.");
-        }
-      } finally {
-        this.busy = false;
-        els.askBtn.disabled = false;
-        this.replyForm.hidden = false;
-      }
-    }
-
-    render(data) {
-      const block = el("div", "msg-assistant");
-      if (data.answer) {
-        const body = el("div", "markdown");
-        body.innerHTML = DOMPurify.sanitize(marked.parse(data.answer));
-        decorateMarkdown(body, data.players);
-        block.append(body);
-      }
-
-      for (const chart of data.charts || []) block.append(renderChart(chart));
-
-      if (data.status === "question") {
-        const q = el("div", "clarify");
-        q.append(el("p", "clarify-label", "Quick question"));
-        const qText = el("div", "clarify-question markdown");
-        qText.innerHTML = DOMPurify.sanitize(marked.parseInline(data.question || ""));
-        decorateMarkdown(qText, data.players);
-        q.append(qText);
-        if (data.options?.length) {
-          const opts = el("div", "chips");
-          for (const option of data.options) {
-            const label = typeof option === "string" ? option : option.label;
-            let b;
-            if (option.spellId) {
-              // Ability options are Wowhead links styled as buttons: Wowhead's script only adds its icon and
-              // hover tooltip to links. Clicking still answers instead of opening Wowhead.
-              b = el("a", "chip option", label);
-              b.href = `https://www.wowhead.com/spell=${option.spellId}`;
-              b.setAttribute("role", "button");
-            } else {
-              b = el("button", "chip option", label);
-              b.type = "button";
-            }
-            // "Something else / other / I'll type it" means "let me type", so focus the box instead of sending.
-            const letMeType = /something else|\bother\b|type it|i'll type|let me type|own answer/i.test(label);
-            b.onclick = (e) => {
-              e.preventDefault();
-              if (b.classList.contains("disabled")) return;
-              if (letMeType) { this.replyInput.placeholder = "Type your answer"; this.replyInput.focus(); }
-              else this.send(label);
-            };
-            opts.append(b);
-          }
-          q.append(opts);
-        }
-        block.append(q);
-        this.replyInput.placeholder = data.options?.length ? "…or type your own answer" : "Type your answer";
-      } else {
-        this.replyInput.placeholder = "Ask a follow-up…";
-      }
-
-      if (data.links?.length) {
-        const links = el("div", "wcl-links");
-        for (const link of data.links) {
-          const a = el("a", "wcl-link");
-          a.append(el("span", "wcl-badge", "WCL"), el("span", "", link.label));
-          a.href = link.url;
-          a.target = "_blank";
-          a.rel = "noopener noreferrer";
-          links.append(a);
-        }
-        block.append(links);
-      }
-
-      if (data.toolCalls?.length) block.append(renderTrace(data.toolCalls, data.usage));
-      this.log.append(block);
-      refreshTooltips();
-      if (data.status === "question") this.replyInput.focus({ preventScroll: true });
-      return block;
-    }
-
-    disableOptions() {
-      for (const b of this.log.querySelectorAll(".option")) {
-        b.disabled = true; // buttons
-        b.classList.add("disabled"); // link-style ability options can't be disabled natively
-        b.setAttribute("aria-disabled", "true");
-      }
-    }
-
-    error(message) {
-      this.log.append(el("p", "error", message));
-    }
-  }
-
-  function renderTrace(calls, usage) {
+  function renderTrace(calls) {
     const details = el("details", "trace");
-    let summary = `How I found this (${calls.length} lookup${calls.length === 1 ? "" : "s"})`;
-    if (usage) {
-      const tokens = usage.input + usage.cacheRead + usage.cacheWrite + usage.output;
-      summary += ` · ${(tokens / 1000).toFixed(1)}k tokens`;
-      if (usage.estimatedCostUsd != null) summary += ` · ≈$${usage.estimatedCostUsd.toFixed(3)}`;
-    }
-    details.append(el("summary", "", summary));
+    details.append(el("summary", "", "How I found this"));
     const list = el("ol");
     for (const c of calls) {
       const li = el("li");
@@ -428,14 +649,14 @@
     return details;
   }
 
-  // ---- Charts -------------------------------------------------------------------
+  // ---- Charts ----------------------------------------------------------------------
 
   const formatAmount = (n) =>
     n >= 1e9 ? `${(n / 1e9).toFixed(2)}b` : n >= 1e6 ? `${(n / 1e6).toFixed(2)}m` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : `${Math.round(n)}`;
   const formatClock = (sec) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
   const colorFor = (series, i) => CLASS_COLORS[series.class] || FALLBACK_COLORS[i % FALLBACK_COLORS.length];
 
-  // A Warcraft Logs-style panel: per-player lines over time, then a ranked table.
+  // A Warcraft Logs-style panel: per-player lines over time (or per pull) beside a ranked table.
   function renderChart(chart) {
     const panel = el("section", "chart-panel");
     panel.append(el("h3", "chart-title", chart.title));
@@ -443,7 +664,6 @@
     const canvasWrap = el("div", "chart-canvas");
     const canvas = el("canvas");
     canvasWrap.append(canvas);
-    panel.append(canvasWrap);
 
     // "timeline": x is seconds into the fight. "pulls": x is one category per pull.
     const perPull = chart.kind === "pulls";
@@ -475,7 +695,7 @@
         }
       : {
           type: "linear", min: xs[0], max: xs[xs.length - 1],
-          ticks: { color: "#9aa3b2", callback: (v) => formatClock(v), maxTicksLimit: 12 },
+          ticks: { color: "#9aa3b2", callback: (v) => formatClock(v), maxTicksLimit: 10 },
           grid: { color: "rgba(127,211,255,0.08)" },
         };
 
@@ -509,7 +729,9 @@
       },
     }));
 
-    panel.append(renderRankTable(chart));
+    const tableWrap = el("div", "rank-wrap");
+    tableWrap.append(renderRankTable(chart));
+    panel.append(canvasWrap, tableWrap);
     if (chart.series.length > CHART_LINES)
       panel.append(el("p", "chart-note", `Graph shows the top ${CHART_LINES}; the table lists everyone. Click names in the legend to hide/show lines.`));
     return panel;
@@ -530,10 +752,10 @@
       const name = el("td", "rank-name", s.name);
       name.style.color = colorFor(s, i);
 
-      const pct = el("td", "rank-pct", `${((s.total / grand) * 100).toFixed(2)}%`);
+      const pct = el("td", "rank-pct", `${((s.total / grand) * 100).toFixed(1)}%`);
       const barCell = el("td", "rank-bar");
       const bar = el("span");
-      bar.style.width = `${(s.total / max) * 78}%`; // leave room for the amount beside the longest bar
+      bar.style.width = `${(s.total / max) * 70}%`; // leave room for the amount beside the longest bar
       bar.style.background = colorFor(s, i);
       const amount = el("span", "rank-amount", formatAmount(s.total));
       barCell.append(bar, amount);
@@ -546,7 +768,7 @@
     return table;
   }
 
-  // ---- Glossary -----------------------------------------------------------------
+  // ---- Glossary --------------------------------------------------------------------
 
   let glossaryText = "";
   let canEditGlossary = false;
@@ -640,19 +862,33 @@
     }
   }
 
-  // ---- Wire up ------------------------------------------------------------------
+  // ---- Wire up ---------------------------------------------------------------------
 
   els.loginBtn.onclick = () => {
     location.href = `${API}/auth/login?returnUrl=${encodeURIComponent(location.href.split("#")[0])}`;
   };
-  els.askBtn.onclick = ask;
-  els.newQuestionBtn.onclick = expandForm;
-  els.question.addEventListener("input", updateCount);
+
+  els.composer.onsubmit = (e) => { e.preventDefault(); ask(); };
   els.question.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) ask();
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); ask(); }
   });
+  els.question.addEventListener("input", () => { updateCount(); autoGrow(); });
+  els.newBtn.onclick = () => { startFresh(); els.question.focus(); };
+
+  els.report.addEventListener("input", () => {
+    clearTimeout(reportTimer);
+    reportTimer = setTimeout(() => {
+      state.scope = { kind: "auto" };
+      state.showAllPulls = false;
+      if (state.thread && reportCode(state.thread.report) !== reportCode(els.report.value)) startFresh();
+      loadReport();
+    }, 500);
+  });
+  els.pullsMore.onclick = () => { state.showAllPulls = !state.showAllPulls; renderScope(); };
+
   els.deathsOn.addEventListener("change", saveFilters);
   els.deathsCount.addEventListener("change", saveFilters);
+  els.clearRecent.onclick = () => { storage.remove(RECENT_KEY); renderRecent(); };
 
   els.glossaryBtn.onclick = openGlossary;
   els.glossaryClose.onclick = () => els.glossaryDialog.close();
