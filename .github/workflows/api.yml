@@ -1,0 +1,43 @@
+name: Deploy API to Azure App Service
+
+on:
+  push:
+    branches: [main]
+    paths: ["src/**", "*.sln", ".github/workflows/api.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Publish
+        run: dotnet publish src/WclQuery.Api -c Release -o publish
+
+      - name: Check deployment settings
+        env:
+          APP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+          HAS_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE != '' }}
+        run: |
+          if [ -z "$APP_NAME" ] || [ "$HAS_PROFILE" != "true" ]; then
+            echo "::error::Set the AZURE_WEBAPP_NAME variable and AZURE_WEBAPP_PUBLISH_PROFILE secret (see docs/DEPLOY-AZURE.md)."
+            exit 1
+          fi
+
+      - uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: publish

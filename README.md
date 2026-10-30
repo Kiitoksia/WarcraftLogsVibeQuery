@@ -71,6 +71,8 @@ server without a bot.
 
 ## Deploy
 
+Step-by-step for Azure App Service + GitHub Pages: [docs/DEPLOY-AZURE.md](docs/DEPLOY-AZURE.md).
+
 **API** — any host that runs .NET 10 or a container (Azure App Service, Render, Fly.io).
 Set these environment variables there (double underscore = nested setting):
 
