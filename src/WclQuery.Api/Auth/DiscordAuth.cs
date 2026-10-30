@@ -23,7 +23,10 @@ public sealed class DiscordAuthOptions
     /// <summary>Your Discord server (guild) id.</summary>
     public string GuildId { get; set; } = "";
 
-    /// <summary>Role ids allowed to use the site (e.g. Raider). Empty = any member of the guild.</summary>
+    /// <summary>
+    /// Role ids allowed to use the site (e.g. Raider, or just Officer). Officer roles and editor user ids are always
+    /// allowed too. Careful: empty = any member of the guild.
+    /// </summary>
     public List<string> AllowedRoleIds { get; set; } = [];
 
     /// <summary>Role ids that can also edit the guild glossary. Officers can always use the site.</summary>
@@ -128,7 +131,7 @@ public sealed class DiscordAuth(
         var roles = member["roles"]?.AsArray().Select(r => r!.GetValue<string>()).ToHashSet() ?? [];
         var canEdit = _options.OfficerRoleIds.Any(roles.Contains) || _options.EditorUserIds.Contains(userId);
         if (!canEdit && _options.AllowedRoleIds.Count > 0 && !_options.AllowedRoleIds.Any(roles.Contains))
-            return (null, "Your Discord role doesn't have access. Ask an officer for the Raider role.");
+            return (null, "Your Discord account doesn't have access to this site yet. Ask an officer if you think it should.");
 
         var name = member["nick"]?.GetValue<string>()
             ?? user["global_name"]?.GetValue<string>()

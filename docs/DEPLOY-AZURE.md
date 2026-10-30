@@ -75,7 +75,7 @@ then **Apply** and confirm the restart.
 | `Discord__ClientSecret` | from step 3 |
 | `Discord__RedirectUri` | `https://<api-host>/auth/callback` |
 | `Discord__GuildId` | your server ID |
-| `Discord__AllowedRoleIds__0` | Raider role ID (add `__1`, `__2`… for more roles) |
+| `Discord__AllowedRoleIds__0` | Role that may use the site, e.g. Raider, or your Officer role to keep it officers-only (add `__1`… for more). **Don't leave this empty**: empty means every member of the Discord server |
 | `Discord__OfficerRoleIds__0` | Officer role ID: can edit the guild glossary, and can always use the site (add `__1`… for more) |
 | `Discord__EditorUserIds__0` | Your own Discord **user** ID, to edit the glossary without the officer role (add `__1`… for more people) |
 | `Cors__AllowedOrigins__0` | `https://kiitoksia.github.io` |
