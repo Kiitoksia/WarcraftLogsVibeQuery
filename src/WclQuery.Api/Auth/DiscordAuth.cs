@@ -39,10 +39,19 @@ public sealed class DiscordAuthOptions
     public List<string> EditorUserIds { get; set; } = [];
 
     public TimeSpan SessionLifetime { get; set; } = TimeSpan.FromDays(7);
+
+    /// <summary>
+    /// Change this to any new value to log everyone out (e.g. after tightening AllowedRoleIds), so they have to
+    /// log in again and pass the current role checks. Logins made under a different value are rejected.
+    /// </summary>
+    public string SessionVersion { get; set; } = "1";
 }
 
 /// <summary>A logged-in user. Sessions from before glossary editing existed deserialize with CanEditGlossary = false.</summary>
 public sealed record AuthUser(string Id, string Name, bool CanEditGlossary = false);
+
+/// <summary>What the encrypted session token holds: the user, and the SessionVersion it was issued under.</summary>
+internal sealed record SessionToken(AuthUser User, string Version);
 
 /// <summary>
 /// Discord OAuth2 login that only lets in members of one guild holding an allowed role.
@@ -137,7 +146,8 @@ public sealed class DiscordAuth(
             ?? user["global_name"]?.GetValue<string>()
             ?? user["username"]!.GetValue<string>();
         var authUser = new AuthUser(userId, name, canEdit);
-        return (_tokens.Protect(JsonSerializer.Serialize(authUser), _options.SessionLifetime), null);
+        var session = new SessionToken(authUser, _options.SessionVersion);
+        return (_tokens.Protect(JsonSerializer.Serialize(session), _options.SessionLifetime), null);
     }
 
     public AuthUser? GetUser(HttpContext context)
@@ -148,7 +158,10 @@ public sealed class DiscordAuth(
         if (!header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) return null;
         try
         {
-            return JsonSerializer.Deserialize<AuthUser>(_tokens.Unprotect(header["Bearer ".Length..].Trim()));
+            // Sessions issued under a different SessionVersion (including ones from before it existed) are rejected,
+            // so the site sends the user back to the login page.
+            var session = JsonSerializer.Deserialize<SessionToken>(_tokens.Unprotect(header["Bearer ".Length..].Trim()));
+            return session is { User: not null } && session.Version == _options.SessionVersion ? session.User : null;
         }
         catch (Exception ex) when (ex is CryptographicException or JsonException or FormatException)
         {

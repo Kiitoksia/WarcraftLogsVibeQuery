@@ -77,6 +77,7 @@ then **Apply** and confirm the restart.
 | `Discord__GuildId` | your server ID |
 | `Discord__AllowedRoleIds__0` | Role that may use the site, e.g. Raider, or your Officer role to keep it officers-only (add `__1`… for more). **Don't leave this empty**: empty means every member of the Discord server |
 | `Discord__OfficerRoleIds__0` | Officer role ID: can edit the guild glossary, and can always use the site (add `__1`… for more) |
+| `Discord__SessionVersion` | Optional. Change it to any new value (e.g. `2`, then `3`…) to log everyone out, so they have to log in again under the current role rules. Logins last 7 days otherwise |
 | `Discord__EditorUserIds__0` | Your own Discord **user** ID, to edit the glossary without the officer role (add `__1`… for more people) |
 | `Cors__AllowedOrigins__0` | `https://kiitoksia.github.io` |
 | `RateLimit__QuestionsPerHour` | `30` |
