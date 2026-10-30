@@ -3,10 +3,11 @@
 What our raiders mean by informal names for mechanics. Claude reads this before every question,
 so it can use the right ability straight away instead of guessing or asking.
 
+Officers edit this from the site's Glossary button; changes apply to the next question.
 How to add an entry: put it under the boss's heading, as one bullet per mechanic. Say what people
 call it, which ability (name and spell id) it is in the logs, and anything that changes how it
-should be counted, e.g. which hits are mistakes and which are expected. Then commit and push;
-the API redeploys automatically.
+should be counted, e.g. which hits are mistakes and which are expected. Start a new heading for
+each boss, and feel free to delete bosses from old raid tiers.
 
 ## Ula'tek (The Venomous Abyss)
 

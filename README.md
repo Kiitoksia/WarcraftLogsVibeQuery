@@ -1,4 +1,4 @@
-# Log Oracle — plain-English Warcraft Logs queries
+# Warcraft Log Query Engine
 
 Guild members paste a Warcraft Logs report link and ask things like:
 
@@ -48,11 +48,7 @@ the Anthropic key and the Discord secret all live on the API.
    dotnet run --project src/WclQuery.Api --launch-profile http
    ```
 
-3. Serve the site on port 5500 (any static server works), then open http://localhost:5500:
-
-   ```bash
-   npx serve web -l 5500
-   ```
+3. Open http://localhost:5022/site/. In Development the API also serves the `web/` folder.
 
 ## Discord role gate
 
@@ -94,10 +90,11 @@ Pushing changes under `web/` redeploys.
 
 ## Guild glossary
 
-[`src/WclQuery.Core/Knowledge/glossary.md`](src/WclQuery.Core/Knowledge/glossary.md) tells Claude what
-the guild's informal names mean, e.g. "eggs" = Rancid Yolk on Ula'tek. Claude reads it before every
-question. Add an entry whenever Claude has to ask what a term means, or gets it wrong. Pushing the
-change redeploys the API.
+The glossary tells Claude what the guild's informal names mean, e.g. "eggs" = Rancid Yolk on Ula'tek.
+Claude reads it before every question. Officers (Discord roles in `Discord:OfficerRoleIds`) edit it from
+the site's **Glossary** button; changes apply to the next question, no deploy needed. It's stored on
+the server (see `GlossaryOptions`), with every previous version kept. The first version is seeded from
+[`src/WclQuery.Core/Knowledge/glossary.md`](src/WclQuery.Core/Knowledge/glossary.md).
 
 ## Filters
 

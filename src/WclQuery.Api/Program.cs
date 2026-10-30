@@ -2,6 +2,7 @@ using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.DataProtection;
 using WclQuery.Api.Auth;
 using WclQuery.Core.Engine;
+using WclQuery.Core.Knowledge;
 using WclQuery.Core.WarcraftLogs;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -14,6 +15,8 @@ builder.Services.Configure<DiscordAuthOptions>(config.GetSection(DiscordAuthOpti
 builder.Services.AddMemoryCache();
 builder.Services.AddHttpClient<WarcraftLogsClient>();
 builder.Services.AddHttpClient("discord");
+builder.Services.Configure<GlossaryOptions>(config.GetSection(GlossaryOptions.SectionName));
+builder.Services.AddSingleton<GlossaryStore>();
 builder.Services.AddSingleton<ConversationStore>();
 builder.Services.AddSingleton<QueryEngine>();
 builder.Services.AddSingleton<DiscordAuth>();
@@ -26,7 +29,7 @@ if (!string.IsNullOrEmpty(keysPath)) dp.PersistKeysToFileSystem(new DirectoryInf
 // The static site (GitHub Pages) lives on a different origin from this API.
 var allowedOrigins = config.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
-    p.WithOrigins(allowedOrigins).WithHeaders("Authorization", "Content-Type").WithMethods("GET", "POST")));
+    p.WithOrigins(allowedOrigins).WithHeaders("Authorization", "Content-Type").WithMethods("GET", "POST", "PUT")));
 
 // Each question costs Claude tokens, so cap questions per user per hour.
 var questionsPerHour = config.GetValue("RateLimit:QuestionsPerHour", 30);
@@ -49,6 +52,18 @@ var app = builder.Build();
 
 app.UseCors();
 app.UseRateLimiter();
+
+// Local development: also serve the static site from ../../web at /site/, so one process runs everything.
+if (app.Environment.IsDevelopment())
+{
+    var webRoot = Path.GetFullPath(Path.Combine(app.Environment.ContentRootPath, "..", "..", "web"));
+    if (Directory.Exists(webRoot))
+    {
+        var files = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(webRoot);
+        app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = files, RequestPath = "/site" });
+        app.UseStaticFiles(new StaticFileOptions { FileProvider = files, RequestPath = "/site" });
+    }
+}
 
 bool IsAllowedReturnUrl(string url) =>
     Uri.TryCreate(url, UriKind.Absolute, out var uri)
@@ -93,6 +108,26 @@ app.MapGet("/auth/callback", async (string? code, string? state, string? error, 
 
 app.MapGet("/api/me", (DiscordAuth auth, HttpContext ctx) =>
     auth.GetUser(ctx) is { } user ? Results.Ok(user) : Results.Unauthorized());
+
+// ---- Glossary (everyone can read; officers can edit) ----------------------------
+
+app.MapGet("/api/glossary", (DiscordAuth auth, GlossaryStore glossary, HttpContext ctx) =>
+{
+    if (auth.GetUser(ctx) is not { } user) return Results.Unauthorized();
+    var g = glossary.Get();
+    return Results.Ok(new { g.Text, g.UpdatedBy, g.UpdatedAt, canEdit = user.IsOfficer });
+});
+
+app.MapPut("/api/glossary", (GlossaryUpdate req, DiscordAuth auth, GlossaryStore glossary, HttpContext ctx) =>
+{
+    if (auth.GetUser(ctx) is not { } user) return Results.Unauthorized();
+    if (!user.IsOfficer) return Results.Json(new { error = "Only officers can edit the glossary." }, statusCode: StatusCodes.Status403Forbidden);
+    if (req.Text is null || req.Text.Length > GlossaryStore.MaxLength)
+        return Results.BadRequest(new { error = $"The glossary can be up to {GlossaryStore.MaxLength:N0} characters." });
+
+    var g = glossary.Save(req.Text, user.Name);
+    return Results.Ok(new { g.Text, g.UpdatedBy, g.UpdatedAt, canEdit = true });
+});
 
 // ---- Questions ----------------------------------------------------------------
 
@@ -163,6 +198,8 @@ static async Task<IResult> RunAsync(Func<Task<QueryResult>> run, ILogger logger)
 }
 
 internal sealed record SettingsDto(int? DeathCutoff);
+
+internal sealed record GlossaryUpdate(string? Text);
 
 internal sealed record AskRequest(string? Report, string Question, int? Fight, SettingsDto? Settings);
 

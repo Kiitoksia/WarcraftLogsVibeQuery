@@ -29,6 +29,11 @@
     question: $("question"), examples: $("examples"), askBtn: $("ask-btn"),
     charCount: $("char-count"), results: $("results"),
     deathsOn: $("filter-deaths"), deathsCount: $("filter-deaths-count"),
+    askSummary: $("ask-summary"), askSummaryReport: $("ask-summary-report"), newQuestionBtn: $("new-question-btn"),
+    glossaryBtn: $("glossary-btn"), glossaryDialog: $("glossary-dialog"), glossaryClose: $("glossary-close"),
+    glossaryMeta: $("glossary-meta"), glossaryView: $("glossary-view"), glossaryEditor: $("glossary-editor"),
+    glossaryError: $("glossary-error"), glossaryEdit: $("glossary-edit"), glossaryCancel: $("glossary-cancel"),
+    glossarySave: $("glossary-save"),
   };
 
   const storage = {
@@ -43,6 +48,10 @@
     if (text !== undefined) node.textContent = text;
     return node;
   };
+
+  const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const scrollTo = (node, block = "start") =>
+    node.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block });
 
   // ---- Auth -------------------------------------------------------------------
 
@@ -70,6 +79,8 @@
   function showLogin(error) {
     els.loginPanel.hidden = false;
     els.askPanel.hidden = true;
+    els.askSummary.hidden = true;
+    els.glossaryBtn.hidden = true;
     els.userArea.replaceChildren();
     els.authError.hidden = !error;
     els.authError.textContent = error || "";
@@ -78,6 +89,7 @@
   function showApp(user) {
     els.loginPanel.hidden = true;
     els.askPanel.hidden = false;
+    els.glossaryBtn.hidden = false;
     const logout = el("button", "btn link", "Log out");
     logout.onclick = () => { storage.remove(TOKEN_KEY); showLogin(); };
     els.userArea.replaceChildren(el("span", "", user.name), logout);
@@ -88,6 +100,7 @@
   async function init() {
     const authError = consumeAuthFragment();
     renderExamples();
+    loadFilters();
     if (authError) return showLogin(authError);
     try {
       const res = await api("/api/me");
@@ -117,15 +130,11 @@
       els.deathsOn.checked = !!saved.deathsOn;
       if (saved.deathsCount) els.deathsCount.value = saved.deathsCount;
     } catch { /* ignore bad saved data */ }
-    updateFilterState();
+    els.deathsCount.disabled = !els.deathsOn.checked;
   }
 
   function saveFilters() {
     storage.set(FILTERS_KEY, JSON.stringify({ deathsOn: els.deathsOn.checked, deathsCount: els.deathsCount.value }));
-    updateFilterState();
-  }
-
-  function updateFilterState() {
     els.deathsCount.disabled = !els.deathsOn.checked;
   }
 
@@ -141,7 +150,24 @@
   }
 
   function updateCount() {
-    els.charCount.textContent = `${els.question.value.length} / 500`;
+    els.charCount.textContent = `${els.question.value.length} / 500 · Ctrl+Enter to ask`;
+  }
+
+  // While a question is answered, fold the form into a one-line bar so the answer gets the screen.
+  function collapseForm(report) {
+    const code = report.match(/reports\/(?:a:)?([A-Za-z0-9]+)/)?.[1] || report;
+    els.askSummaryReport.textContent = code;
+    els.askPanel.hidden = true;
+    els.askSummary.hidden = false;
+  }
+
+  function expandForm() {
+    els.askSummary.hidden = true;
+    els.askPanel.hidden = false;
+    els.question.value = "";
+    updateCount();
+    scrollTo(els.askPanel);
+    els.question.focus({ preventScroll: true });
   }
 
   function ask() {
@@ -150,7 +176,60 @@
     if (!report) { els.report.focus(); return; }
     if (!question) { els.question.focus(); return; }
     storage.set(REPORT_KEY, report);
+    collapseForm(report);
     new Thread(report).send(question);
+  }
+
+  // ---- Answer decoration --------------------------------------------------------
+
+  // Wrap player names in the answer with their class colour, like Warcraft Logs does.
+  function colourPlayers(root, players) {
+    if (!players?.length) return;
+    const classOf = new Map(players.map((p) => [p.name.toLocaleLowerCase(), p.class]));
+    const names = [...new Set(players.map((p) => p.name))].sort((a, b) => b.length - a.length);
+    const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const pattern = new RegExp(`(?<![\\p{L}\\p{N}])(${escaped.join("|")})(?![\\p{L}\\p{N}])`, "giu");
+
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => node.parentElement.closest("a, code, pre, .player")
+        ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+    });
+    const textNodes = [];
+    while (walker.nextNode()) textNodes.push(walker.currentNode);
+
+    for (const node of textNodes) {
+      const text = node.nodeValue;
+      pattern.lastIndex = 0;
+      if (!pattern.test(text)) continue;
+      pattern.lastIndex = 0;
+      const frag = document.createDocumentFragment();
+      let last = 0;
+      for (const m of text.matchAll(pattern)) {
+        frag.append(text.slice(last, m.index));
+        const span = el("span", "player", m[0]);
+        const cls = classOf.get(m[0].toLocaleLowerCase());
+        span.style.color = CLASS_COLORS[cls] || "";
+        span.dataset.class = cls || "";
+        frag.append(span);
+        last = m.index + m[0].length;
+      }
+      frag.append(text.slice(last));
+      node.replaceWith(frag);
+    }
+  }
+
+  function decorateMarkdown(root, players) {
+    for (const a of root.querySelectorAll("a[href]")) {
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+    }
+    colourPlayers(root, players);
+  }
+
+  // Wowhead's script turns spell links into hover tooltips; tell it about newly added links.
+  function refreshTooltips() {
+    try { window.$WowheadPower?.refreshLinks?.(); } catch { /* script not loaded yet */ }
+    try { window.WH?.Tooltips?.refreshLinks?.(); } catch { /* older/newer script versions */ }
   }
 
   // ---- Conversation thread ------------------------------------------------------
@@ -179,6 +258,7 @@
 
       this.card.append(this.log, this.replyForm);
       els.results.prepend(this.card);
+      requestAnimationFrame(() => scrollTo(this.card));
     }
 
     async send(text) {
@@ -193,9 +273,17 @@
       this.log.append(el("p", "msg-user", text));
       const filterNote = describeSettings(settings);
       if (filterNote) this.log.append(el("p", "msg-filters", `Filter: ${filterNote}`));
+
       const pending = el("p", "thinking");
-      pending.append(el("span", "spinner"), document.createTextNode("Reading the logs…"));
+      const status = el("span", "", "Reading the logs…");
+      pending.append(el("span", "spinner"), status);
       this.log.append(pending);
+      if (this.conversationId) scrollTo(pending, "nearest");
+      const started = Date.now();
+      const timer = setInterval(() => {
+        const s = Math.round((Date.now() - started) / 1000);
+        status.textContent = s < 25 ? `Reading the logs… ${s}s` : `Still digging (big questions take a while)… ${s}s`;
+      }, 1000);
 
       try {
         let res;
@@ -211,6 +299,7 @@
           this.error("Couldn't reach the server.");
           return;
         } finally {
+          clearInterval(timer);
           pending.remove();
         }
 
@@ -221,7 +310,8 @@
 
         this.conversationId = data.conversationId;
         try {
-          this.render(data);
+          const block = this.render(data);
+          requestAnimationFrame(() => scrollTo(block));
         } catch (err) {
           console.error("Failed to render answer", err, data);
           this.error("Got an answer but couldn't display it.");
@@ -238,6 +328,7 @@
       if (data.answer) {
         const body = el("div", "markdown");
         body.innerHTML = DOMPurify.sanitize(marked.parse(data.answer));
+        decorateMarkdown(body, data.players);
         block.append(body);
       }
 
@@ -245,7 +336,11 @@
 
       if (data.status === "question") {
         const q = el("div", "clarify");
-        q.append(el("p", "clarify-question", data.question));
+        q.append(el("p", "clarify-label", "Quick question"));
+        const qText = el("div", "clarify-question markdown");
+        qText.innerHTML = DOMPurify.sanitize(marked.parseInline(data.question || ""));
+        decorateMarkdown(qText, data.players);
+        q.append(qText);
         if (data.options?.length) {
           const opts = el("div", "chips");
           for (const option of data.options) {
@@ -265,7 +360,8 @@
       if (data.links?.length) {
         const links = el("div", "wcl-links");
         for (const link of data.links) {
-          const a = el("a", "wcl-link", `Open in Warcraft Logs ↗ ${link.label}`);
+          const a = el("a", "wcl-link");
+          a.append(el("span", "wcl-badge", "WCL"), el("span", "", link.label));
           a.href = link.url;
           a.target = "_blank";
           a.rel = "noopener noreferrer";
@@ -276,7 +372,9 @@
 
       if (data.toolCalls?.length) block.append(renderTrace(data.toolCalls));
       this.log.append(block);
-      if (data.status === "question") this.replyInput.focus();
+      refreshTooltips();
+      if (data.status === "question") this.replyInput.focus({ preventScroll: true });
+      return block;
     }
 
     disableOptions() {
@@ -406,19 +504,90 @@
     return table;
   }
 
+  // ---- Glossary -----------------------------------------------------------------
+
+  let glossaryText = "";
+
+  async function openGlossary() {
+    setGlossaryEditing(false);
+    els.glossaryError.hidden = true;
+    els.glossaryMeta.textContent = "Loading…";
+    els.glossaryView.replaceChildren();
+    els.glossaryDialog.showModal();
+    try {
+      const res = await api("/api/glossary");
+      if (res.status === 401) { els.glossaryDialog.close(); showLogin("Your login expired. Please log in again."); return; }
+      showGlossary(await res.json());
+    } catch {
+      els.glossaryMeta.textContent = "";
+      showGlossaryError("Couldn't load the glossary.");
+    }
+  }
+
+  function showGlossary(g) {
+    glossaryText = g.text || "";
+    els.glossaryView.innerHTML = DOMPurify.sanitize(marked.parse(glossaryText || "_The glossary is empty._"));
+    decorateMarkdown(els.glossaryView, []);
+    refreshTooltips();
+    els.glossaryMeta.textContent = g.updatedBy
+      ? `Last edited by ${g.updatedBy} on ${new Date(g.updatedAt).toLocaleString()}`
+      : "Not edited yet (this is the built-in starting version).";
+    els.glossaryEdit.hidden = !g.canEdit;
+    if (!g.canEdit) els.glossaryMeta.textContent += " · Only officers can edit it.";
+  }
+
+  function setGlossaryEditing(editing) {
+    els.glossaryView.hidden = editing;
+    els.glossaryEditor.hidden = !editing;
+    els.glossaryEdit.hidden = editing;
+    els.glossaryCancel.hidden = !editing;
+    els.glossarySave.hidden = !editing;
+    if (editing) {
+      els.glossaryEditor.value = glossaryText;
+      els.glossaryEditor.focus();
+    }
+  }
+
+  function showGlossaryError(message) {
+    els.glossaryError.textContent = message;
+    els.glossaryError.hidden = false;
+  }
+
+  async function saveGlossary() {
+    els.glossarySave.disabled = true;
+    els.glossaryError.hidden = true;
+    try {
+      const res = await api("/api/glossary", { method: "PUT", body: JSON.stringify({ text: els.glossaryEditor.value }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { showGlossaryError(data.error || "Couldn't save the glossary."); return; }
+      showGlossary(data);
+      setGlossaryEditing(false);
+    } catch {
+      showGlossaryError("Couldn't reach the server.");
+    } finally {
+      els.glossarySave.disabled = false;
+    }
+  }
+
   // ---- Wire up ------------------------------------------------------------------
 
   els.loginBtn.onclick = () => {
     location.href = `${API}/auth/login?returnUrl=${encodeURIComponent(location.href.split("#")[0])}`;
   };
   els.askBtn.onclick = ask;
-  els.deathsOn.addEventListener("change", saveFilters);
-  els.deathsCount.addEventListener("change", saveFilters);
-  loadFilters();
+  els.newQuestionBtn.onclick = expandForm;
   els.question.addEventListener("input", updateCount);
   els.question.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) ask();
   });
+  els.deathsOn.addEventListener("change", saveFilters);
+  els.deathsCount.addEventListener("change", saveFilters);
+
+  els.glossaryBtn.onclick = openGlossary;
+  els.glossaryClose.onclick = () => els.glossaryDialog.close();
+  els.glossaryEdit.onclick = () => setGlossaryEditing(true);
+  els.glossaryCancel.onclick = () => setGlossaryEditing(false);
+  els.glossarySave.onclick = saveGlossary;
 
   init();
 })();

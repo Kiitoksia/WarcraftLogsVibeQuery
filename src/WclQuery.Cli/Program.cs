@@ -18,6 +18,8 @@ builder.Services.Configure<WarcraftLogsOptions>(builder.Configuration.GetSection
 builder.Services.Configure<QueryEngineOptions>(builder.Configuration.GetSection(QueryEngineOptions.SectionName));
 builder.Services.AddMemoryCache();
 builder.Services.AddHttpClient<WarcraftLogsClient>();
+builder.Services.Configure<WclQuery.Core.Knowledge.GlossaryOptions>(builder.Configuration.GetSection(WclQuery.Core.Knowledge.GlossaryOptions.SectionName));
+builder.Services.AddSingleton<WclQuery.Core.Knowledge.GlossaryStore>();
 builder.Services.AddSingleton<ConversationStore>();
 builder.Services.AddSingleton<QueryEngine>();
 using var host = builder.Build();

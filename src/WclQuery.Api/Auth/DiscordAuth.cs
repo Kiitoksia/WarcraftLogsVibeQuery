@@ -23,13 +23,17 @@ public sealed class DiscordAuthOptions
     /// <summary>Your Discord server (guild) id.</summary>
     public string GuildId { get; set; } = "";
 
-    /// <summary>Role ids allowed to use the site (e.g. Raider, Officer). Empty = any member of the guild.</summary>
+    /// <summary>Role ids allowed to use the site (e.g. Raider). Empty = any member of the guild.</summary>
     public List<string> AllowedRoleIds { get; set; } = [];
+
+    /// <summary>Role ids that can also edit the guild glossary. Officers can always use the site.</summary>
+    public List<string> OfficerRoleIds { get; set; } = [];
 
     public TimeSpan SessionLifetime { get; set; } = TimeSpan.FromDays(7);
 }
 
-public sealed record AuthUser(string Id, string Name);
+/// <summary>A logged-in user. Sessions from before officer support deserialize with IsOfficer = false.</summary>
+public sealed record AuthUser(string Id, string Name, bool IsOfficer = false);
 
 /// <summary>
 /// Discord OAuth2 login that only lets in members of one guild holding an allowed role.
@@ -43,7 +47,7 @@ public sealed class DiscordAuth(
     ILogger<DiscordAuth> logger)
 {
     public const string NonceCookie = "wclq_oauth_nonce";
-    private static readonly AuthUser DevUser = new("dev", "Local developer");
+    private static readonly AuthUser DevUser = new("dev", "Local developer", IsOfficer: true);
 
     private readonly DiscordAuthOptions _options = options.Value;
     private readonly ITimeLimitedDataProtector _tokens =
@@ -114,14 +118,15 @@ public sealed class DiscordAuth(
 
         var member = (await memberResponse.Content.ReadFromJsonAsync<JsonObject>(ct))!;
         var roles = member["roles"]?.AsArray().Select(r => r!.GetValue<string>()).ToHashSet() ?? [];
-        if (_options.AllowedRoleIds.Count > 0 && !_options.AllowedRoleIds.Any(roles.Contains))
+        var isOfficer = _options.OfficerRoleIds.Any(roles.Contains);
+        if (!isOfficer && _options.AllowedRoleIds.Count > 0 && !_options.AllowedRoleIds.Any(roles.Contains))
             return (null, "Your Discord role doesn't have access. Ask an officer for the Raider role.");
 
         var user = member["user"]!;
         var name = member["nick"]?.GetValue<string>()
             ?? user["global_name"]?.GetValue<string>()
             ?? user["username"]!.GetValue<string>();
-        var authUser = new AuthUser(user["id"]!.GetValue<string>(), name);
+        var authUser = new AuthUser(user["id"]!.GetValue<string>(), name, isOfficer);
         return (_tokens.Protect(JsonSerializer.Serialize(authUser), _options.SessionLifetime), null);
     }
 

@@ -44,7 +44,7 @@ New apps have this switched off by default.
 
 ## 3. Create the Discord application
 
-1. https://discord.com/developers/applications → **New Application** → name it "Log Oracle".
+1. https://discord.com/developers/applications → **New Application** → name it "Warcraft Log Query Engine".
 2. **OAuth2** page:
    - Copy the **Client ID**.
    - **Reset Secret** → copy the **Client Secret**.
@@ -69,13 +69,17 @@ then **Apply** and confirm the restart.
 | `Discord__ClientSecret` | from step 3 |
 | `Discord__RedirectUri` | `https://<api-host>/auth/callback` |
 | `Discord__GuildId` | your server ID |
-| `Discord__AllowedRoleIds__0` | Raider role ID |
-| `Discord__AllowedRoleIds__1` | Officer role ID (add `__2`, `__3`… for more roles) |
+| `Discord__AllowedRoleIds__0` | Raider role ID (add `__1`, `__2`… for more roles) |
+| `Discord__OfficerRoleIds__0` | Officer role ID: can edit the guild glossary, and can always use the site (add `__1`… for more) |
 | `Cors__AllowedOrigins__0` | `https://kiitoksia.github.io` |
 | `RateLimit__QuestionsPerHour` | `30` |
 
 The double underscore `__` is how App Service spells a nested setting, so `Discord__GuildId` = `Discord:GuildId`.
 Don't include a trailing slash on the CORS origin.
+
+The guild glossary that officers edit from the site is saved in the app's persistent storage
+(`D:\home\data\wclquery`), which deployments don't touch. Earlier versions are kept in
+`glossary-history` next to it; you can browse them in the app's **Advanced Tools (Kudu)** → Debug console.
 
 ## 5. Connect GitHub to Azure
 

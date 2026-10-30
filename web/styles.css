@@ -40,6 +40,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 body {
   margin: 0;
@@ -58,11 +59,14 @@ body {
   background: var(--surface);
 }
 
-.brand { display: flex; align-items: center; gap: 10px; }
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .brand-mark { color: var(--accent); font-size: 18px; }
-.brand h1 { margin: 0; font: 700 20px/1 Cinzel, Georgia, serif; letter-spacing: 0.04em; }
+.brand h1 { margin: 0; font: 700 20px/1.1 Cinzel, Georgia, serif; letter-spacing: 0.03em; }
+@media (max-width: 600px) { .brand h1 { font-size: 15px; } }
 
+.topbar-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .user-area { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+@media (max-width: 600px) { .user-area > span { display: none; } }
 
 main { max-width: 820px; margin: 0 auto; padding: 24px 16px 64px; }
 
@@ -131,6 +135,13 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
 .btn.primary { background: var(--accent); color: var(--accent-text); }
 .btn.primary:disabled { opacity: 0.55; cursor: wait; }
 .btn.link { background: none; color: var(--accent); padding: 4px 6px; }
+.btn.ghost { background: none; color: var(--text); border: 1px solid var(--border); padding: 6px 12px; font-size: 14px; }
+.btn.ghost:hover { border-color: var(--accent); }
+
+/* Collapsed question form */
+.ask-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; }
+.ask-summary-text { color: var(--muted); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ask-summary code { background: var(--code-bg); padding: 1px 6px; border-radius: 4px; color: var(--text); }
 
 .error { color: var(--error); }
 
@@ -147,13 +158,34 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
 .msg-user + .msg-user,
 .msg-assistant + .msg-user { margin-top: 22px; }
 
-.markdown { overflow-x: auto; }
+.msg-assistant { scroll-margin-top: 12px; animation: fade-in 0.25s ease-out; }
+@keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .msg-assistant { animation: none; } }
+
+/* Answer typography: a bold headline, then tables/bullets, then notes. */
+.markdown { overflow-x: auto; line-height: 1.6; }
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }
-.markdown table { border-collapse: collapse; margin: 8px 0; font-size: 14px; }
-.markdown th, .markdown td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
-.markdown th { background: var(--chip); }
+.markdown > p:first-child { font-size: 16.5px; }
+.markdown p { margin: 0 0 10px; }
+.markdown h3 { font-size: 15px; margin: 18px 0 8px; color: var(--accent); }
+.markdown ul, .markdown ol { margin: 4px 0 10px; padding-left: 22px; }
+.markdown li { margin: 3px 0; }
+.markdown li::marker { color: var(--muted); }
+.markdown table { border-collapse: collapse; margin: 6px 0 14px; font-size: 14px; min-width: 50%; }
+.markdown th, .markdown td { border-bottom: 1px solid var(--border); padding: 7px 12px; text-align: left; }
+.markdown th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); border-bottom-width: 2px; }
+.markdown tbody tr:nth-child(even) { background: color-mix(in srgb, var(--chip) 45%, transparent); }
+.markdown td:not(:first-child) { font-variant-numeric: tabular-nums; }
 .markdown code { background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
+.markdown a { color: var(--accent); }
+.markdown strong { font-weight: 700; }
+.player { font-weight: 600; }
+
+/* Class colours like Priest (white) and Rogue (yellow) vanish on a light page, so outline them there. */
+@media (prefers-color-scheme: light) {
+  .player { text-shadow: 0 0 1px rgba(0, 0, 0, 0.75), 0 0 1px rgba(0, 0, 0, 0.75); }
+}
 
 .clarify {
   margin-top: 12px;
@@ -161,6 +193,7 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
   border: 1px dashed var(--accent);
   border-radius: 8px;
 }
+.clarify-label { margin: 0 0 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); }
 .clarify-question { margin: 0 0 10px; font-weight: 600; }
 .clarify .chips { margin-bottom: 0; }
 .chip.option { border-color: var(--accent); }
@@ -171,9 +204,38 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
 .reply input { margin: 0; flex: 1; min-width: 0; }
 .btn.small { padding: 8px 14px; font-size: 14px; background: var(--accent); color: var(--accent-text); }
 
-.wcl-links { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; font-size: 13px; }
-.wcl-link { color: var(--accent); text-decoration: none; }
-.wcl-link:hover { text-decoration: underline; }
+.wcl-links { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; font-size: 13px; }
+.wcl-link { display: inline-flex; align-items: center; gap: 8px; color: var(--text); text-decoration: none; }
+.wcl-link:hover span:last-child { text-decoration: underline; }
+.wcl-badge {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.05em;
+  padding: 2px 6px; border-radius: 4px;
+  background: #f6a623; color: #1a1407;
+}
+
+/* Glossary dialog */
+.glossary-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 20px;
+}
+.glossary-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+.dialog-head { display: flex; justify-content: space-between; align-items: center; }
+.dialog-head h2 { margin: 0; font: 600 20px Cinzel, Georgia, serif; }
+.glossary-dialog > p { margin: 6px 0; font-size: 13px; }
+.glossary-view { margin-top: 12px; max-height: 55vh; overflow-y: auto; padding-right: 6px; }
+.glossary-view h1 { font-size: 18px; }
+.glossary-view h2 { font-size: 16px; color: var(--accent); }
+.glossary-editor {
+  margin-top: 12px;
+  height: 55vh;
+  font: 13px/1.5 ui-monospace, Consolas, monospace;
+}
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 
 /* ---- Warcraft Logs-style chart panel (always dark, like the site it mirrors) ---- */
 
