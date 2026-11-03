@@ -76,6 +76,12 @@ public sealed partial class ReportTools
         located = [.. located.Where(l => l.MapId == mapId).OrderBy(l => l.Fight).ThenBy(l => l.Time)];
         var gameMap = MapCatalog.Get(mapId);
 
+        // Optionally turn everything so the boss is at the top, for mechanics that follow where the boss stands.
+        var relativeTo = args.OptionalString("relative_to") ?? "map";
+        if (relativeTo is not ("map" or "boss")) throw new ToolInputException("relative_to must be map or boss.");
+        var frame = relativeTo == "boss" ? await BossFrameAsync(report, q, located, mapId, ct) : null;
+        if (frame is not null) located = [.. located.Select(frame.Apply)];
+
         // Image position: on the saved map, or spread across the points' own extent when the map isn't saved.
         double minX = located.Min(l => l.WorldX), maxX = located.Max(l => l.WorldX);
         double minY = located.Min(l => l.WorldY), maxY = located.Max(l => l.WorldY);
@@ -105,7 +111,8 @@ public sealed partial class ReportTools
         var spots = FindSpots(located);
         var spotOf = new Dictionary<Located, int>();
         foreach (var l in located) spotOf.TryAdd(l, spots.FindIndex(s => Distance(s, l) <= SpotRadiusYards * 1.5));
-        var (cx, cy) = (spots.Average(s => s.X), spots.Average(s => s.Y));
+        // Directions are measured from the platform centre (known exactly in the boss frame), else the spots' centre.
+        var (cx, cy) = frame is not null ? (frame.CentreX, frame.CentreY) : (spots.Average(s => s.X), spots.Average(s => s.Y));
         // Name casters on spots only when more than one kind of NPC is involved (e.g. the boss and its adds).
         var npcNames = located.Where(l => ActorIndex(l.ActorId) is null).Select(l => l.Who).Distinct().ToList();
         var nameCasters = npcNames.Count > 1;
@@ -132,7 +139,7 @@ public sealed partial class ReportTools
         var hitAbility = args.OptionalLong("hit_ability_id");
         var windowMs = (long)(Math.Clamp(args.OptionalDouble("window_sec") ?? 10, 1, 30) * 1000);
         var outcomes = hitAbility is long hitId && split is "volley" or "pattern"
-            ? await OutcomesAsync(report, q, volleys, hitId, windowMs, mapId, ct)
+            ? await OutcomesAsync(report, q, volleys, hitId, windowMs, mapId, frame, ct)
             : null;
         MapPoint OutcomePoint(Located l, string group)
         {
@@ -357,11 +364,23 @@ public sealed partial class ReportTools
                 "A lane with no hits on it while players stood in its path is unconfirmed: that caster's waves may not travel that way (say so).");
         else if (split is "volley" or "pattern")
             text.AppendLine("Wave lanes are drawn from each caster's facing; add hit_ability_id to also estimate their speed and width.");
+        if (frame is not null)
+            text.AppendLine($"Turned so {frame.Boss} is at the top (north) of every map: north = the boss's side, south = opposite the boss, " +
+                $"east = the boss's left, west = the boss's right (as the boss faces into the platform). The boss stood at: " +
+                string.Join(", ", frame.Seen.Select(x => $"{x.Where} ({x.Count} casts)")) + ". Describe positions relative to the boss.");
+        else if (relativeTo == "boss")
+            text.AppendLine("Couldn't find where the boss stood, so the map is not turned to the boss.");
         if (truncated) text.AppendLine($"WARNING: stopped after {MaxCountedEvents:N0} events; narrow it with ability_id, phase or fewer pulls.");
         text.AppendLine("The map is shown to the user below your answer; describe what it shows (spots by direction), don't draw it in text.");
 
         var style = args.OptionalString("style") ?? (split is "none" or "pull" && located.Count >= 100 ? "heat" : "dots");
         if (style is not ("heat" or "dots")) throw new ToolInputException("style must be heat or dots.");
+        if (frame is not null)
+        {
+            var (bu, bv) = ToUv(frame.CentreX + frame.Radius, frame.CentreY);
+            var bossMark = new MapPoint(Math.Round(bu, 4), Math.Round(bv, 4), null, "B", frame.Boss);
+            panels = [.. panels.Select(p => p with { Points = [.. p.Points, bossMark] })];
+        }
         var view = new MapView(
             args.OptionalString("title") ?? (gameMap?.Name ?? $"Map {mapId}"),
             style,
@@ -373,6 +392,98 @@ public sealed partial class ReportTools
         return new ToolOutput(text.ToString(), Map: view);
     }
 
+    /// <summary>
+    /// Turns positions so the boss is always at the top (north) of the platform: each position is rotated about the
+    /// platform centre by where the boss stood at that moment (snapped to 45°), so patterns that follow the boss line up.
+    /// </summary>
+    private sealed class BossFrame(string boss, double cx, double cy, double radius,
+        Dictionary<int, List<(long Time, double Angle)>> angles, List<(string Where, int Count)> seen)
+    {
+        public string Boss => boss;
+        public double CentreX => cx;
+        public double CentreY => cy;
+        public double Radius => radius;
+        public IReadOnlyList<(string Where, int Count)> Seen => seen;
+
+        public double AngleAt(int fight, long time)
+        {
+            if (!angles.TryGetValue(fight, out var list) || list.Count == 0) return 0;
+            var last = list[0];
+            foreach (var a in list) { if (a.Time > time + 3000) break; last = a; }
+            return last.Angle;
+        }
+
+        public Located Apply(Located l) => Rotate(l, AngleAt(l.Fight, l.Time));
+
+        private Located Rotate(Located l, double phi)
+        {
+            if (phi == 0) return l;
+            var (n, e) = (l.WorldX - cx, -(l.WorldY - cy));
+            var (n2, e2) = (n * Math.Cos(phi) + e * Math.Sin(phi), -n * Math.Sin(phi) + e * Math.Cos(phi));
+            return l with { WorldX = cx + n2, WorldY = cy - e2, Facing = l.Facing - phi };
+        }
+    }
+
+    /// <summary>
+    /// Where the boss stood through each pull, from its own casts (which carry its position and facing). The platform
+    /// centre is the point equidistant from the places the boss stands; with fewer than three, the mean of the data.
+    /// </summary>
+    private async Task<BossFrame?> BossFrameAsync(Report report, ReportQuery q, List<Located> located, int mapId, CancellationToken ct)
+    {
+        var bossNames = report.Fights.Where(f => f.IsBoss && (q.FightIds?.Contains(f.Id) ?? true)).Select(f => f.Name).ToHashSet();
+        var bossIds = report.MasterData.Actors.Where(a => a.Type == "NPC" && bossNames.Contains(a.Name)).Select(a => a.Id).ToList();
+        if (bossIds.Count == 0) return null;
+
+        var samples = new List<Located>();
+        foreach (var id in bossIds)
+        {
+            var bq = new ReportQuery
+            {
+                StartTime = q.StartTime, EndTime = q.EndTime, FightIds = q.FightIds, DataType = "Casts",
+                HostilityType = "Enemies", SourceId = id, IncludeResources = true,
+            };
+            await wcl.ForEachEventPageAsync(reportCode, bq, MaxCountedEvents, events =>
+            {
+                foreach (var e in events)
+                    if (GetInt(e, "resourceActor") == 1 && GetDouble(e, "x") is double x && GetDouble(e, "y") is double y
+                        && GetInt(e, "mapID") == mapId)
+                        samples.Add(new Located(GetInt(e, "fight") ?? 0, (long)(GetDouble(e, "timestamp") ?? 0), id,
+                            report.ActorName(id), y / 100, WclXToWorldY * x / 100, mapId, GetDouble(e, "facing") / 100));
+            }, ct);
+        }
+        if (samples.Count == 0) return null;
+
+        // The places the boss stands, most used first; the centre is equidistant from the top three.
+        var places = FindSpots(samples).OrderByDescending(s => s.Count).ToList();
+        double cx, cy;
+        if (places.Count >= 3 && Circumcentre(places[0], places[1], places[2]) is var (ox, oy)
+            && Math.Sqrt(Math.Pow(ox - places[0].X, 2) + Math.Pow(oy - places[0].Y, 2)) < 120)
+            (cx, cy) = (ox, oy);
+        else
+        {
+            var ring = FindSpots(located);
+            (cx, cy) = (ring.Average(s => s.X), ring.Average(s => s.Y));
+        }
+        var radius = places.Average(p => Math.Sqrt(Math.Pow(p.X - cx, 2) + Math.Pow(p.Y - cy, 2)));
+
+        var angles = samples.GroupBy(s => s.Fight).ToDictionary(g => g.Key, g => g.OrderBy(s => s.Time).Select(s =>
+        {
+            var (_, _, degrees) = Bearing(new Spot(s.WorldX, s.WorldY), cx, cy);
+            return (s.Time, Angle: Math.Round(degrees / 45) * 45 * Math.PI / 180);
+        }).ToList());
+        var seen = places.Select(p => (Where: Bearing(p, cx, cy).Direction + " edge", p.Count)).ToList();
+        return new BossFrame(report.ActorName(bossIds[0]), cx, cy, radius, angles, seen);
+    }
+
+    private static (double X, double Y)? Circumcentre(Spot a, Spot b, Spot c)
+    {
+        var d = 2 * (a.X * (b.Y - c.Y) + b.X * (c.Y - a.Y) + c.X * (a.Y - b.Y));
+        if (Math.Abs(d) < 1e-6) return null;
+        double A = a.X * a.X + a.Y * a.Y, B = b.X * b.X + b.Y * b.Y, C = c.X * c.X + c.Y * c.Y;
+        return ((A * (b.Y - c.Y) + B * (c.Y - a.Y) + C * (a.Y - b.Y)) / d,
+                (A * (c.X - b.X) + B * (a.X - c.X) + C * (b.X - a.X)) / d);
+    }
+
     private sealed record Outcome(List<Located> Hits, List<Located> Safe);
 
     /// <summary>
@@ -381,7 +492,7 @@ public sealed partial class ReportTools
     /// casts). Comparing the two per pattern shows whether there's a reliably safe area.
     /// </summary>
     private async Task<Dictionary<Volley, Outcome>> OutcomesAsync(Report report, ReportQuery q, List<Volley> volleys,
-        long hitAbility, long windowMs, int mapId, CancellationToken ct)
+        long hitAbility, long windowMs, int mapId, BossFrame? frame, CancellationToken ct)
     {
         var outcomes = volleys.ToDictionary(v => v, _ => new Outcome([], []));
         var byFight = volleys.GroupBy(v => v.Fight).ToDictionary(g => g.Key, g => g.OrderBy(v => v.Start).ToList());
@@ -430,6 +541,12 @@ public sealed partial class ReportTools
 
         // A player who was hit in the window isn't a "safe" sample for it, wherever else they stood.
         foreach (var (v, o) in outcomes) o.Safe.RemoveAll(l => hitBy[v].Contains(l.ActorId));
+        if (frame is not null)
+            foreach (var o in outcomes.Values)
+            {
+                for (var i = 0; i < o.Hits.Count; i++) o.Hits[i] = frame.Apply(o.Hits[i]);
+                for (var i = 0; i < o.Safe.Count; i++) o.Safe[i] = frame.Apply(o.Safe[i]);
+            }
         return outcomes;
     }
 
@@ -586,6 +703,7 @@ public sealed partial class ReportTools
             ["split_by"] = Prop(new { type = "string", @enum = new[] { "none", "pull", "volley", "pattern" }, description = "none: one map. pull: one map per pull. volley: one map per group of events within 2s (e.g. each wave cast). pattern: volleys that used the same spots merged into one map each, with how often and when they happen." }),
             ["hit_ability_id"] = Prop(new { type = "integer", description = "With split_by pattern or volley: the ability that hits players (e.g. the wave damage id). Each map then also shows where players got hit after the volley (red) and where players stood without being hit (green), and the text lists safe-looking and most-hit areas per pattern. Use it for 'is there a safe spot' questions." }),
             ["window_sec"] = Prop(new { type = "number", description = "With hit_ability_id: seconds after each volley to count hits and positions (default 10)." }),
+            ["relative_to"] = Prop(new { type = "string", @enum = new[] { "map", "boss" }, description = "boss: turn every position so the boss is at the top, using where the boss stood at that moment. Use it when mechanics follow the boss (adds or waves that spawn relative to where the boss is), e.g. patterns and safe spots per boss position. Default map." }),
             ["style"] = Prop(new { type = "string", @enum = new[] { "heat", "dots" }, description = "heat (density) or dots (coloured by class, numbered spots). Default: heat for 100+ points on one map, dots otherwise. Use heat when the user asks for a heatmap." }),
         };
         return new Tool

@@ -200,6 +200,9 @@ public sealed partial class QueryEngine(
           pattern, the areas that stayed clean across many occurrences, how much data backs it, and the most-hit areas.
           The waves' own paths (lanes) come with it: describe where each wave goes and the gaps between lanes; trust
           lanes that hits confirm, and say when a lane (e.g. the boss's own cast) isn't confirmed.
+          When the boss moves between positions and mechanics follow it (adds or waves spawning relative to the boss),
+          pass relative_to boss: maps turn so the boss is at the top and patterns are grouped by where they are
+          relative to the boss. Describe positions from the boss's point of view (its left/right, near/far side).
         - Ninja/early pulls: use get_pull_timeline and identify the first player who engaged.
         - Deaths: get_table or get_events with data_type Deaths.
         - Settings: the user can pin the scope in the site (one pull, or all pulls) and switch on filters (e.g.

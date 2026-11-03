@@ -130,6 +130,9 @@ stood (green), and the AI lists the areas that stayed clean across occurrences: 
 Waves (and anything else cast from a spot) are also drawn as lanes: a straight path along the caster's facing,
 with its speed and width estimated from the hits and markers for where it is every 2s, so the gaps between waves
 show even where nobody stood.
+With `relative_to: "boss"`, every position is turned about the platform centre by where the boss stood at that
+moment (from its casts, which carry its position and facing), so mechanics that follow the boss line up across
+pulls: the boss is drawn at the top of every map.
 Positions come with damage, heal and cast events (`includeResources`); Warcraft Logs' map id is the game's UiMap id.
 
 Map images and their coordinate bounds come from the game's data via [wago.tools](https://wago.tools) and are
