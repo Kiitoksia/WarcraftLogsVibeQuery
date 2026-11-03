@@ -40,7 +40,7 @@ main {
   padding-block: 28px 56px;
 }
 @media (max-width: 640px) { .brand span:last-child { font-size: 14px; } }
-.wrap { max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
+.wrap { max-width: 1600px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
 h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; }
 h1 { font-size: clamp(26px, 4vw, 38px); letter-spacing: 0.02em; }
 h2 { font-size: 20px; letter-spacing: 0.03em; }
@@ -79,11 +79,21 @@ p { margin: 0; }
 
 .cards { display: flex; flex-direction: column; gap: 18px; }
 .card {
-  display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 18px 24px;
+  display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(300px, 1fr); gap: 18px 28px;
   background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px;
   scroll-margin-top: 16px;
 }
-@media (max-width: 820px) { .card { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 900px) { .card { grid-template-columns: minmax(0, 1fr); } }
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.tab {
+  display: flex; flex-direction: column; gap: 2px; padding: 10px 16px; min-width: 0;
+  background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: 10px;
+  font: 600 16px var(--font-body); text-align: left; cursor: pointer;
+}
+.tab small { font: 400 13px var(--font-body); color: var(--muted); }
+.tab:hover, .tab:focus-visible { border-color: var(--accent); outline: none; }
+.tab[aria-selected="true"] { border-color: var(--accent); box-shadow: inset 0 -3px 0 var(--accent); }
+.pick { display: flex; flex-direction: column; gap: 10px; }
 .card .head { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
 .card .letter { font: 700 22px var(--font-display); color: var(--accent); }
 .card .meta { font-size: 13px; color: var(--muted); }
@@ -116,7 +126,7 @@ footer { font-size: 13px; color: var(--muted); display: flex; flex-direction: co
   <header>
     <span class="eyebrow">The Venomous Abyss · Ula'tek · Gore Rattle waves</span>
     <h1>Ula'tek Wave Patterns</h1>
-    <p class="lede">Every wave volley from report <span class="num">3t7kArhXbNVPKzcq</span>, turned so Ula'tek is always at the top of the map. Seen from the boss, the waves follow a short script: each combination below shows where the waves start, where they go, where people got hit, and the spot that stayed clean.</p>
+    <p class="lede">Every wave volley from report <span class="num">3t7kArhXbNVPKzcq</span>, turned so Ula'tek is always at the top of the map. Seen from the boss, the waves follow a short script that depends on which way she moves after the opening: pick the tab for this pull, then each combination shows where the waves start, where they go, where people got hit, and the spot that stayed clean.</p>
     <div class="facts" id="facts"></div>
   </header>
 
@@ -135,12 +145,22 @@ footer { font-size: 13px; color: var(--muted); display: flex; flex-direction: co
     </section>
   </div>
 
+  <section class="pick">
+    <h2>Which way did she move?</h2>
+    <p class="muted">Ula'tek starts on the north edge and moves to the west or east edge after a minute or so. Left and right are as the raid sees it, facing her at the start.</p>
+    <div class="tabs" role="tablist" id="tabs"></div>
+  </section>
+
   <section class="sequence">
     <h2>Volley order</h2>
     <p class="muted">Which combination each volley was, across all pulls that reached it. Click one to jump to its map.</p>
     <div class="strip" id="strip"></div>
   </section>
 
+  <section class="sequence">
+    <h2>Combinations, most players hit first</h2>
+    <p class="muted">The ones that caused the most hits across these pulls come first.</p>
+  </section>
   <section class="cards" id="cards"></section>
 
   <footer>
@@ -154,7 +174,12 @@ footer { font-size: 13px; color: var(--muted); display: flex; flex-direction: co
 <script src="ula-tek-waves.data.js"></script>
 <script>
 // Exported once from the report (see README: Guides); the fight doesn't change between weeks.
-const DATA = window.WAVE_DATA;
+// Two scripts: one for pulls where she moved left (west), one for right (east).
+const SIDES = [
+  { key: "left", label: "Boss moves left", where: "to the west edge" },
+  { key: "right", label: "Boss moves right", where: "to the east edge" },
+];
+let DATA, spots, centre;
 const MAP_IMAGE = "../maps/2610.png";
 
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -183,6 +208,7 @@ function parse(panel) {
   const volleys = [...(head.match(/volley number (.*)$/)?.[1] || "").matchAll(/#(\d+) ×(\d+)/g)].map((m) => ({ n: +m[1], count: +m[2] }));
   const between = get("between the lanes").replace(/^\([^)]*\):\s*/, "");
   const outcome = get("outcome:");
+  const hits = +(outcome.match(/^(\d+) hits/)?.[1] || 0);
   const listOf = (s) => s && s !== "nowhere" && !s.startsWith("none") ? s.split(/;\s*/) : [];
   const safe = listOf(get("safe-looking areas:")).map((s) => {
     const m = s.match(/^(.*?) \(players there in (\d+) of (\d+), clean (\d+)×, (\d+) hits \/ (\d+) not hit\)/);
@@ -194,7 +220,7 @@ function parse(panel) {
   }).filter(Boolean);
   const gaps = between ? splitZones(between) : [];
   const rate = outcome.match(/\((\d+)% hit\)/)?.[1];
-  return { seen: seen ? { times: +seen[1], pulls: +seen[2] } : null, volleys, gaps, safe, risky, rate: rate ? +rate : null };
+  return { seen: seen ? { times: +seen[1], pulls: +seen[2] } : null, volleys, gaps, safe, risky, rate: rate ? +rate : null, hits };
 }
 // "south-west, mid, north-west, mid, south edge" -> ["south-west, mid", "north-west, mid", "south edge"]
 function splitZones(s) {
@@ -206,8 +232,6 @@ function splitZones(s) {
 }
 
 // ---- Who fired: names for each combination ----
-const spots = DATA.spots;
-const centre = { u: spots.reduce((a, s) => a + s.u, 0) / spots.length, v: spots.reduce((a, s) => a + s.v, 0) / spots.length };
 const bearingOf = (p) => (Math.atan2(p.u - centre.u, -(p.v - centre.v)) * 180 / Math.PI + 360) % 360;
 function describe(panel) {
   const fired = panel.points.filter((p) => p.label && p.label !== "B");
@@ -228,7 +252,7 @@ const ready = new Promise((r) => { img.onload = r; img.onerror = r; });
 function drawPanel(canvas, panel) {
   const [u0, v0, u1, v1] = DATA.crop;
   const W = DATA.map.width, H = DATA.map.height;
-  const width = 760, height = Math.round(width * ((v1 - v0) * H) / ((u1 - u0) * W));
+  const width = 1200, height = Math.round(width * ((v1 - v0) * H) / ((u1 - u0) * W));
   const ratio = Math.min(2, window.devicePixelRatio || 1);
   canvas.width = width * ratio; canvas.height = height * ratio;
   const ctx = canvas.getContext("2d");
@@ -296,16 +320,13 @@ function drawPanel(canvas, panel) {
 }
 
 // ---- Page ----
-const panels = DATA.panels.map((p, i) => ({ panel: p, id: `combo-${String.fromCharCode(97 + i)}`, letter: String.fromCharCode(65 + i), info: parse(p), name: describe(p) }))
-  .filter((x) => (x.info.seen?.times || 0) >= 3); // one-offs aren't a pattern
-
-const totalVolleys = DATA.panels.reduce((a, p) => a + (parse(p).seen?.times || 0), 0);
 const facts = document.getElementById("facts");
-for (const [k, v] of [["Pulls", "29"], ["Volleys", String(totalVolleys)], ["Combinations", String(panels.length)], ["Wave speed", "~14 yd/s"], ["Crosses the platform", "~8 s"]]) {
-  const span = el("span"); span.append(el("span", null, k + " "), el("b", "num", v)); facts.append(span);
-}
-
 const legend = document.getElementById("legend");
+const strip = document.getElementById("strip");
+const cards = document.getElementById("cards");
+const tabs = document.getElementById("tabs");
+let canvases = [];
+
 for (const [cls, color, text] of [
   ["", "--boss", "Ula'tek (B) and her sweep"], ["", "--teal", "Gore Rattle spawn"], ["lane", "--teal", "Rattle wave path (marks every 2 s)"],
   ["band", "--boss", "Area the boss's 5 waves cover"], ["", "--hit", "Player hit"], ["", "--safe", "Player not hit"],
@@ -314,8 +335,31 @@ for (const [cls, color, text] of [
 }
 function paintLegend() { for (const sw of legend.querySelectorAll(".swatch")) sw.style.background = css(sw.dataset.color); }
 
+for (const side of SIDES) {
+  const b = el("button", "tab"); b.type = "button"; b.id = "tab-" + side.key;
+  b.setAttribute("role", "tab");
+  b.append(el("span", null, side.label), el("small", null, `${side.where} · ${window.WAVE_DATA[side.key].pulls.length} pulls`));
+  b.onclick = () => { history.replaceState(null, "", "#" + side.key); render(side.key); };
+  tabs.append(b);
+}
+
+function render(key) {
+DATA = window.WAVE_DATA[key];
+spots = DATA.spots;
+centre = { u: spots.reduce((a, s) => a + s.u, 0) / spots.length, v: spots.reduce((a, s) => a + s.v, 0) / spots.length };
+for (const b of tabs.children) b.setAttribute("aria-selected", String(b.id === "tab-" + key));
+facts.replaceChildren(); strip.replaceChildren(); cards.replaceChildren(); canvases = [];
+
+const panels = DATA.panels.map((p, i) => ({ panel: p, id: `combo-${String.fromCharCode(97 + i)}`, letter: String.fromCharCode(65 + i), info: parse(p), name: describe(p) }))
+  .filter((x) => (x.info.seen?.times || 0) >= 3); // one-offs aren't a pattern
+
+const totalVolleys = DATA.panels.reduce((a, p) => a + (parse(p).seen?.times || 0), 0);
+for (const [k, v] of [["Pulls", String(DATA.pulls.length)], ["Volleys", String(totalVolleys)], ["Combinations", String(panels.length)], ["Wave speed", "~14 yd/s"], ["Crosses the platform", "~8 s"]]) {
+  const span = el("span"); span.append(el("span", null, k + " "), el("b", "num", v)); facts.append(span);
+}
+
+
 // Volley strip: for each volley number, the combinations it was.
-const strip = document.getElementById("strip");
 const byVolley = new Map();
 for (const x of panels) for (const v of x.info.volleys) {
   if (!byVolley.has(v.n)) byVolley.set(v.n, []);
@@ -333,15 +377,14 @@ for (const n of [...byVolley.keys()].sort((a, b) => a - b)) {
   step.append(opts); strip.append(step);
 }
 
-const cards = document.getElementById("cards");
-const canvases = [];
-for (const x of panels) {
+// Worst first: the combinations that hit the most players across these pulls.
+for (const x of [...panels].sort((a, b) => b.info.hits - a.info.hits || b.info.seen.times - a.info.seen.times)) {
   const { info } = x;
   const card = el("article", "card"); card.id = x.id;
   const head = el("div", "head");
   head.append(el("span", "letter", x.letter), el("h3", null, x.name.title));
   const vols = info.volleys.map((v) => `#${v.n}${info.volleys.length > 1 ? ` (${v.count}×)` : ""}`).join(", ");
-  head.append(el("span", "meta", `Seen ${info.seen.times}× in ${info.seen.pulls} pulls · volley ${vols}${info.rate != null ? ` · ${info.rate}% of players hit` : ""}`));
+  head.append(el("span", "meta", `${info.hits} players hit · seen ${info.seen.times}× in ${info.seen.pulls} pulls · volley ${vols}${info.rate != null ? ` · ${info.rate}% of players hit` : ""}`));
   card.append(head);
 
   const canvas = el("canvas", "map"); canvas.setAttribute("role", "img");
@@ -373,8 +416,11 @@ for (const x of panels) {
   cards.append(card);
 }
 
-function drawAll() { paintLegend(); for (const { canvas, panel } of canvases) drawPanel(canvas, panel); }
 drawAll();
+}
+
+function drawAll() { paintLegend(); for (const { canvas, panel } of canvases) drawPanel(canvas, panel); }
+render(SIDES.some((s) => s.key === location.hash.slice(1)) ? location.hash.slice(1) : "right");
 ready.then(drawAll);
 document.fonts?.ready.then(drawAll);
 </script>

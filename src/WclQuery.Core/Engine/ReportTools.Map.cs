@@ -473,7 +473,12 @@ public sealed partial class ReportTools
     /// </summary>
     private async Task<BossFrame?> BossFrameAsync(Report report, ReportQuery q, List<Located> located, int mapId, CancellationToken ct)
     {
-        var bossNames = report.Fights.Where(f => f.IsBoss && (q.FightIds?.Contains(f.Id) ?? true)).Select(f => f.Name).ToHashSet();
+        var selected = report.Fights.Where(f => f.IsBoss && (q.FightIds?.Contains(f.Id) ?? true)).ToList();
+        var bossNames = selected.Select(f => f.Name).ToHashSet();
+        // Every pull of the same encounter, so the platform centre (from all the places the boss stands) is the same
+        // however few pulls were asked about.
+        var encounters = selected.Select(f => f.EncounterId).ToHashSet();
+        var allPulls = report.Fights.Where(f => f.IsBoss && encounters.Contains(f.EncounterId)).ToList();
         var bossIds = report.MasterData.Actors.Where(a => a.Type == "NPC" && bossNames.Contains(a.Name)).Select(a => a.Id).ToList();
         if (bossIds.Count == 0) return null;
 
@@ -482,7 +487,8 @@ public sealed partial class ReportTools
         {
             var bq = new ReportQuery
             {
-                StartTime = q.StartTime, EndTime = q.EndTime, FightIds = q.FightIds, DataType = "Casts",
+                StartTime = allPulls.Min(f => f.StartTime), EndTime = allPulls.Max(f => f.EndTime),
+                FightIds = [.. allPulls.Select(f => f.Id)], DataType = "Casts",
                 HostilityType = "Enemies", SourceId = id, IncludeResources = true,
             };
             await wcl.ForEachEventPageAsync(reportCode, bq, MaxCountedEvents, events =>

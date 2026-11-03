@@ -148,14 +148,15 @@ saved yet is still drawn, on a plain background, and the AI says which id to add
 ## Guides
 
 Fixed reference pages for progression live in `web/guides/` and are linked from the site header, e.g.
-`guides/ula-tek-waves.html`: every Ula'tek wave combination from one report, drawn relative to the boss. Its data
-(`ula-tek-waves.data.js`) was exported once with the CLI:
+`guides/ula-tek-waves.html`: every Ula'tek wave combination from one report, drawn relative to the boss, with a tab
+for each way she moves (left = west, right = east). Its data (`ula-tek-waves.data.js`) was exported once per side with
+the CLI, passing that side's pulls as `fight_ids` instead of `all_boss_pulls`:
 
 ```bash
 WCLQ_MAP_JSON=map.json dotnet run --project src/WclQuery.Cli -- tool 3t7kArhXbNVPKzcq show_map '{"data_type":"Casts","hostility":"Enemies","event_type":"cast","filter_expression":"ability.id IN (1298570, 1311807, 1319282)","all_boss_pulls":true,"split_by":"pattern","hit_ability_id":1292403,"relative_to":"boss"}'
 ```
 
-Then `map.json` becomes `window.WAVE_DATA = {...};` (map, crop, spots and panels). The pages are public on GitHub
+Then the two exports become `window.WAVE_DATA = { left: {...}, right: {...} };` (pulls, map, crop, spots and panels). The pages are public on GitHub
 Pages, like the rest of the static site.
 
 ## Fight notes
