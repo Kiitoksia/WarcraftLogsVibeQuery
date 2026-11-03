@@ -38,6 +38,7 @@ public sealed class WarcraftLogsClient(
                 bossPercentage fightPercentage size friendlyPlayers
                 enemyNPCs { id gameID instanceCount }
                 phaseTransitions { id startTime }
+                maps { id }
               }
               masterData(translate: true) {
                 actors { id name type subType server petOwner gameID }
@@ -51,13 +52,14 @@ public sealed class WarcraftLogsClient(
     private const string EventsQuery = """
         query Events($code: String!, $startTime: Float!, $endTime: Float!, $fightIDs: [Int],
                      $dataType: EventDataType, $hostilityType: HostilityType, $abilityID: Float,
-                     $sourceID: Int, $targetID: Int, $filterExpression: String, $wipeCutoff: Int, $limit: Int) {
+                     $sourceID: Int, $targetID: Int, $filterExpression: String, $wipeCutoff: Int, $limit: Int,
+                     $includeResources: Boolean) {
           reportData {
             report(code: $code) {
               events(startTime: $startTime, endTime: $endTime, fightIDs: $fightIDs,
                      dataType: $dataType, hostilityType: $hostilityType, abilityID: $abilityID,
                      sourceID: $sourceID, targetID: $targetID, filterExpression: $filterExpression, wipeCutoff: $wipeCutoff,
-                     limit: $limit) {
+                     limit: $limit, includeResources: $includeResources) {
                 data
                 nextPageTimestamp
               }
@@ -175,6 +177,7 @@ public sealed class WarcraftLogsClient(
         if (q.TargetId is int t) vars["targetID"] = t;
         if (!string.IsNullOrWhiteSpace(q.FilterExpression)) vars["filterExpression"] = q.FilterExpression;
         if (q.WipeCutoff is int cutoff) vars["wipeCutoff"] = cutoff;
+        if (q.IncludeResources) vars["includeResources"] = true;
         return vars;
     }
 

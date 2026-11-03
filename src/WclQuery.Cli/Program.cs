@@ -115,6 +115,8 @@ static void Print(QueryResult result)
         Console.WriteLine($"[tool] {t.Name} {t.Input} ({t.ElapsedMs} ms){(t.Error is null ? "" : " ERROR: " + t.Error)}");
     foreach (var c in result.Charts)
         Console.WriteLine($"[chart] {c.Title} ({c.Metric}, {c.Series.Count} series)");
+    foreach (var m in result.Maps)
+        Console.WriteLine($"[map] {m.Title} ({m.Style}, {m.Panels.Count} panels, {m.Panels.Sum(p => p.Points.Count)} points)");
     foreach (var l in result.Links)
         Console.WriteLine($"[link] {l.Label}: {l.Url}");
     var u = result.Usage;

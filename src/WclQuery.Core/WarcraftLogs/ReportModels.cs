@@ -36,6 +36,7 @@ public sealed class Report
             f.FriendlyPlayers ??= [];
             f.EnemyNpcs ??= [];
             f.PhaseTransitions ??= [];
+            f.Maps ??= [];
         }
         foreach (var p in Phases) p.Phases ??= [];
 
@@ -103,9 +104,16 @@ public sealed class Fight
     public List<int> FriendlyPlayers { get; set; } = [];
     public List<FightNpc> EnemyNpcs { get; set; } = [];
     public List<PhaseTransition> PhaseTransitions { get; set; } = [];
+    /// <summary>Game map ids (UiMap) the fight took place on; events carry the same id in mapID.</summary>
+    public List<FightMap> Maps { get; set; } = [];
 
     public bool IsBoss => EncounterId != 0;
     public long DurationMs => EndTime - StartTime;
+}
+
+public sealed class FightMap
+{
+    public int Id { get; set; }
 }
 
 public sealed class FightNpc
@@ -169,4 +177,6 @@ public sealed record ReportQuery
     public string? ViewBy { get; init; }
     /// <summary>Ignore all events after this many player deaths in each fight.</summary>
     public int? WipeCutoff { get; init; }
+    /// <summary>Ask for positions (x, y, mapID) and resources on events; heavier, so only when needed.</summary>
+    public bool IncludeResources { get; init; }
 }

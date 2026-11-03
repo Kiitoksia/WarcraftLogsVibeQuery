@@ -39,6 +39,7 @@ public sealed record QueryResult(
     string? Question,
     IReadOnlyList<AskOption> Options,
     IReadOnlyList<ChartData> Charts,
+    IReadOnlyList<MapView> Maps,
     IReadOnlyList<WclLink> Links,
     IReadOnlyList<PlayerInfo> Players,
     IReadOnlyList<ToolCallTrace> ToolCalls,
@@ -190,6 +191,11 @@ public sealed partial class QueryEngine(
         - Bloodlust-type effects have these spell ids: Bloodlust 2825, Heroism 32182, Time Warp 80353,
           Primal Rage 264667, Fury of the Aspects 390386, Drums 444257/381301/309658. Look for Casts
           with filter_expression "ability.id IN (...)"; if none, check find_abilities.
+        - Maps: for "where" questions (where people got hit, died or stood; where adds or waves spawn; spawn
+          patterns or sequences), call show_map: it draws the positions on the in-game map below your answer.
+          For spawn patterns (e.g. "what patterns do the waves come in"), map the NPC casts of every related ability
+          (hostility Enemies, event_type cast, position_of source, the boss's own version too) across all_boss_pulls
+          with split_by pattern, then describe each pattern by compass direction and when it comes (volley number).
         - Ninja/early pulls: use get_pull_timeline and identify the first player who engaged.
         - Deaths: get_table or get_events with data_type Deaths.
         - Settings: the user can pin the scope in the site (one pull, or all pulls) and switch on filters (e.g.
@@ -277,6 +283,7 @@ public sealed partial class QueryEngine(
         var tools = new ReportTools(wcl, conv.ReportCode, conv.Settings, journal);
         var traces = new List<ToolCallTrace>();
         var charts = new List<ChartData>();
+        var maps = new List<MapView>();
         var links = new List<WclLink>();
         var usage = new TokenUsage.Accumulator(llm.Pricing);
 
@@ -294,7 +301,7 @@ public sealed partial class QueryEngine(
         ];
 
         async Task<QueryResult> Result(string status, string? answer, string? question = null, IReadOnlyList<AskOption>? options = null) =>
-            new(conv.Id, status, answer, question, options ?? [], charts,
+            new(conv.Id, status, answer, question, options ?? [], charts, maps,
                 AnswerLinks(charts, links), await PlayersAsync(conv.ReportCode, ct), traces, usage.ToUsage(),
                 await ScopeAsync(conv.ReportCode, traces, ct));
 
@@ -327,7 +334,7 @@ public sealed partial class QueryEngine(
                 }
                 else
                 {
-                    toolResults.Add(await RunToolAsync(tools, call, traces, charts, links, ct));
+                    toolResults.Add(await RunToolAsync(tools, call, traces, charts, maps, links, ct));
                 }
             }
 
@@ -414,7 +421,7 @@ public sealed partial class QueryEngine(
             : "Saved for the officers to review. Carry on with the answer; don't mention this.");
     }
 
-    private static readonly string[] DataTools =["get_table", "get_events", "count_events", "show_chart", "get_pull_timeline"];
+    private static readonly string[] DataTools = ["get_table", "get_events", "count_events", "show_chart", "show_map", "get_pull_timeline"];
 
     /// <summary>
     /// Describes what the data lookups covered, e.g. "All 29 pulls · Phase 1" or "Pull 29", from the tool inputs
@@ -519,7 +526,7 @@ public sealed partial class QueryEngine(
 
     private async Task<LlmToolResult> RunToolAsync(
         ReportTools tools, LlmToolCall call, List<ToolCallTrace> traces,
-        List<ChartData> charts, List<WclLink> links, CancellationToken ct)
+        List<ChartData> charts, List<MapView> maps, List<WclLink> links, CancellationToken ct)
     {
         var inputJson = JsonSerializer.Serialize(call.Input);
         var sw = Stopwatch.StartNew();
@@ -528,6 +535,7 @@ public sealed partial class QueryEngine(
             var output = await tools.ExecuteAsync(call.Name, call.Input, ct);
             traces.Add(new(call.Name, inputJson, null, sw.ElapsedMilliseconds));
             // Charts keep their own link; other lookups' links are candidates only (see AnswerLinks).
+            if (output.Map is not null) maps.Add(output.Map);
             if (output.Chart is not null) charts.Add(output.Chart);
             else if (output.Link is not null) links.Add(output.Link);
             return new(call.Id, output.Text);

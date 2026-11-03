@@ -304,6 +304,28 @@ a.chip.option { color: var(--text) !important; text-decoration: none; } /* overr
 .rank-wrap { min-width: 0; max-height: 380px; overflow: auto; }
 .chart-note { grid-column: 1 / -1; margin: 0; font-size: 12px; color: var(--muted); }
 
+/* ---- Maps: positions on the in-game map, one big map or a grid of small ones (e.g. one per pattern) ---- */
+
+.map-panel {
+  display: flex; flex-direction: column; gap: 10px; margin-top: 12px;
+  padding: 16px; border-radius: 10px; background: var(--bg); border: 1px solid var(--border);
+}
+.map-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.map-controls .chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.map-filter { width: auto; min-width: 180px; padding: 5px 8px; font-size: 13px; }
+.map-legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--text-2); }
+.map-legend-item::before {
+  content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 50%;
+  background: var(--dot); vertical-align: -1px;
+}
+.map-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.map-grid.single { grid-template-columns: minmax(0, 1fr); }
+.map-figure { margin: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.map-canvas { width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--border); background: #1a1d24; }
+.map-grid.single .map-canvas { max-width: 900px; }
+.map-figure figcaption { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.map-figure figcaption strong { font-weight: 600; color: var(--text); }
+
 .rank-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .rank-table th {
   position: sticky; top: 0; background: var(--bg);

@@ -428,6 +428,7 @@
       }
 
       for (const chart of data.charts || []) card.append(renderChart(chart));
+      for (const map of data.maps || []) card.append(renderMap(map));
 
       if (data.status === "question") card.append(this.renderClarify(data, replay));
 
@@ -637,6 +638,218 @@
   const colorFor = (series, i) => CLASS_COLORS[series.class] || FALLBACK_COLORS[i % FALLBACK_COLORS.length];
 
   // A Warcraft Logs-style panel: per-player lines over time (or per pull) beside a ranked table.
+  // ---- Maps: positions from the log on the raid's in-game map ---------------------------
+
+  // NPC groups (the boss, its adds) get fixed colours in order of appearance; players use class colours.
+  const GROUP_COLORS = ["#ff5a4f", "#4fd1c5", "#ffd166", "#b794f4", "#90cdf4", "#f6ad55"];
+  const mapImages = new Map(); // image url -> Promise<HTMLImageElement | null>
+
+  function loadMapImage(url) {
+    if (!mapImages.has(url)) {
+      mapImages.set(url, new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => resolve(null);
+        img.src = url;
+      }));
+    }
+    return mapImages.get(url);
+  }
+
+  function renderMap(view) {
+    const panel = el("section", "map-panel");
+    panel.append(el("h3", "chart-title", view.title));
+
+    const groups = [...new Set(view.panels.flatMap((p) => p.points.map((pt) => pt.group)).filter(Boolean))];
+    const groupColor = (g) => GROUP_COLORS[groups.indexOf(g) % GROUP_COLORS.length];
+    const pointColor = (pt) => pt.actor != null
+      ? CLASS_COLORS[view.actors[pt.actor]?.class] || FALLBACK_COLORS[0]
+      : pt.group ? groupColor(pt.group) : FALLBACK_COLORS[0];
+
+    // Controls: heat/dots for big single maps, and a player filter when players are drawn.
+    const state = { style: view.style, actor: "" };
+    const controls = el("div", "map-controls");
+    const hasPlayers = view.actors.length > 0;
+    if (view.panels.length === 1 && hasPlayers) {
+      for (const style of ["heat", "dots"]) {
+        const b = el("button", "chip small", style === "heat" ? "Heatmap" : "Dots");
+        b.type = "button";
+        b.setAttribute("aria-pressed", String(state.style === style));
+        b.onclick = () => {
+          state.style = style;
+          controls.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+          redraw();
+        };
+        controls.append(b);
+      }
+    }
+    if (hasPlayers && view.actors.length > 1) {
+      const select = el("select", "map-filter");
+      select.setAttribute("aria-label", "Show one player");
+      select.append(new Option("Everyone", ""));
+      view.actors
+        .map((a, i) => ({ a, i, n: view.panels.reduce((s, p) => s + p.points.filter((pt) => pt.actor === i).length, 0) }))
+        .sort((x, y) => y.n - x.n)
+        .forEach(({ a, i, n }) => select.append(new Option(`${a.name} (${n})`, String(i))));
+      select.onchange = () => { state.actor = select.value; redraw(); };
+      controls.append(select);
+    }
+    if (controls.childElementCount) panel.append(controls);
+
+    if (groups.length) {
+      const legend = el("div", "map-legend");
+      for (const g of groups) {
+        const item = el("span", "map-legend-item", g);
+        item.style.setProperty("--dot", groupColor(g));
+        legend.append(item);
+      }
+      panel.append(legend);
+    }
+
+    const single = view.panels.length === 1;
+    const grid = el("div", single ? "map-grid single" : "map-grid");
+    const canvases = view.panels.map((p) => {
+      const fig = el("figure", "map-figure");
+      const canvas = el("canvas", "map-canvas");
+      canvas.setAttribute("role", "img");
+      canvas.setAttribute("aria-label", `${p.title}${p.subtitle ? ` — ${p.subtitle}` : ""}`);
+      const cap = el("figcaption");
+      if (!single || view.panels.length > 1) cap.append(el("strong", "", p.title));
+      if (p.subtitle) cap.append(el("span", "muted", p.subtitle));
+      fig.append(canvas);
+      if (cap.childElementCount) fig.append(cap);
+      grid.append(fig);
+      return { canvas, panel: p };
+    });
+    panel.append(grid);
+    if (!view.map) panel.append(el("p", "chart-note", "This map's image isn't saved yet, so positions are drawn on a plain background."));
+
+    const imagePromise = view.map ? loadMapImage(view.map.image) : Promise.resolve(null);
+    function redraw() {
+      imagePromise.then((img) => {
+        for (const { canvas, panel: p } of canvases) drawMapPanel(canvas, p, view, img, single, state, pointColor);
+      });
+    }
+    redraw();
+    return panel;
+  }
+
+  function drawMapPanel(canvas, p, view, img, single, state, pointColor) {
+    const [u0, v0, u1, v1] = view.crop;
+    const mapW = view.map?.width || 1000;
+    const mapH = view.map?.height || 1000;
+    const srcW = (u1 - u0) * mapW;
+    const srcH = (v1 - v0) * mapH;
+    const width = single ? 900 : 480;
+    const height = Math.round(width * (srcH / srcW));
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+
+    ctx.fillStyle = "#1a1d24";
+    ctx.fillRect(0, 0, width, height);
+    if (img) ctx.drawImage(img, u0 * mapW, v0 * mapH, srcW, srcH, 0, 0, width, height);
+    else {
+      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+      for (let i = 1; i < 10; i++) {
+        ctx.beginPath(); ctx.moveTo((i * width) / 10, 0); ctx.lineTo((i * width) / 10, height); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, (i * height) / 10); ctx.lineTo(width, (i * height) / 10); ctx.stroke();
+      }
+    }
+
+    const toX = (u) => ((u - u0) / (u1 - u0)) * width;
+    const toY = (v) => ((v - v0) / (v1 - v0)) * height;
+    const points = state.actor === "" ? p.points : p.points.filter((pt) => String(pt.actor) === state.actor);
+    const scale = width / 480;
+
+    if (state.style === "heat" && !p.points.some((pt) => pt.label)) {
+      drawHeat(ctx, points, toX, toY, width, height, scale);
+      return;
+    }
+
+    // Dots: darken the map slightly so markers stand out; numbered spots get bigger labelled markers.
+    if (img) { ctx.fillStyle = "rgba(0,0,0,0.25)"; ctx.fillRect(0, 0, width, height); }
+    // Every possible spot, faint, so a pattern reads against the places that didn't fire.
+    const used = new Set(points.map((pt) => pt.label).filter(Boolean));
+    for (const spot of view.spots || []) {
+      if (used.has(spot.label)) continue;
+      const x = toX(spot.u), y = toY(spot.v);
+      ctx.strokeStyle = "rgba(255,255,255,0.55)";
+      ctx.lineWidth = 1.5 * scale;
+      ctx.setLineDash([3 * scale, 3 * scale]);
+      ctx.beginPath();
+      ctx.arc(x, y, 9 * scale, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "rgba(255,255,255,0.7)";
+      ctx.font = `600 ${10 * scale}px Inter, system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(spot.label, x, y + 0.5);
+    }
+    for (const pt of points) {
+      const x = toX(pt.u), y = toY(pt.v);
+      ctx.fillStyle = pointColor(pt);
+      ctx.strokeStyle = "rgba(0,0,0,0.85)";
+      ctx.lineWidth = 1.5 * scale;
+      ctx.beginPath();
+      ctx.arc(x, y, (pt.label ? 11 : 3.5) * scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      if (pt.label) {
+        ctx.fillStyle = "#111";
+        ctx.font = `700 ${12 * scale}px Inter, system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(pt.label, x, y + 0.5);
+      }
+    }
+  }
+
+  // Density: soft blobs summed on a hidden canvas, then coloured blue → green → yellow → red by intensity.
+  function drawHeat(ctx, points, toX, toY, width, height, scale) {
+    const shadow = document.createElement("canvas");
+    shadow.width = width;
+    shadow.height = height;
+    const s = shadow.getContext("2d");
+    const radius = 14 * scale;
+    const alpha = Math.min(0.3, Math.max(0.03, 3 / Math.sqrt(points.length + 1)));
+    for (const pt of points) {
+      const x = toX(pt.u), y = toY(pt.v);
+      const g = s.createRadialGradient(x, y, 0, x, y, radius);
+      g.addColorStop(0, `rgba(0,0,0,${alpha})`);
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      s.fillStyle = g;
+      s.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+    }
+    const heat = s.getImageData(0, 0, width, height);
+    const d = heat.data;
+    // Colours are relative to the busiest spot, so the scale works for 50 points or 20,000.
+    let peak = 1;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > peak) peak = d[i];
+    for (let i = 0; i < d.length; i += 4) {
+      const a = d[i + 3] / peak;
+      if (a === 0) continue;
+      const [r, g, b] = heatColor(a);
+      d[i] = r; d[i + 1] = g; d[i + 2] = b;
+      d[i + 3] = Math.round(Math.min(1, a * 1.6 + 0.15) * 220);
+    }
+    s.putImageData(heat, 0, 0);
+    ctx.drawImage(shadow, 0, 0);
+  }
+
+  function heatColor(t) {
+    const stops = [[0, [40, 90, 255]], [0.35, [40, 220, 120]], [0.65, [255, 220, 40]], [1, [255, 50, 30]]];
+    for (let i = 1; i < stops.length; i++) {
+      if (t <= stops[i][0]) {
+        const [t0, c0] = stops[i - 1], [t1, c1] = stops[i];
+        const f = (t - t0) / (t1 - t0);
+        return c0.map((c, k) => Math.round(c + (c1[k] - c) * f));
+      }
+    }
+    return stops[stops.length - 1][1];
+  }
+
   function renderChart(chart) {
     const panel = el("section", "chart-panel");
     panel.append(el("h3", "chart-title", chart.title));

@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Knowledge\glossary.md" LogicalName="WclQuery.Glossary" />
+    <EmbeddedResource Include="Knowledge\maps.json" LogicalName="WclQuery.Maps" />
   </ItemGroup>
 
 </Project>

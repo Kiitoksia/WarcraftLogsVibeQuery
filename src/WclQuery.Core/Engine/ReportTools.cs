@@ -13,7 +13,7 @@ namespace WclQuery.Core.Engine;
 /// compact, token-friendly text result with actor/ability IDs resolved to names.
 /// Times exposed to the model are seconds relative to the start of a fight.
 /// </summary>
-public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, QuerySettings settings,
+public sealed partial class ReportTools(WarcraftLogsClient wcl, string reportCode, QuerySettings settings,
     EncounterJournal? journal = null)
 {
     private const int MaxResultChars = 12_000;
@@ -45,6 +45,7 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
             "count_events" => new ToolOutput(await CountEventsAsync(report, args, ct)),
             "get_pull_timeline" => new ToolOutput(await PullTimelineAsync(report, args, ct)),
             "show_chart" => await ChartAsync(report, args, ct),
+            "show_map" => await MapAsync(report, args, ct),
             "get_encounter_journal" => new ToolOutput(await JournalAsync(report, args, ct)),
             _ => throw new ToolInputException($"Unknown tool '{name}'."),
         };
@@ -957,6 +958,7 @@ public sealed class ReportTools(WarcraftLogsClient wcl, string reportCode, Query
                     Required = ["title", "data_type"],
                 },
             },
+            MapToolDefinition(windowProps),
             new Tool
             {
                 Name = "get_encounter_journal",

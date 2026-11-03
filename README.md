@@ -120,6 +120,23 @@ in-game Encounter Journal for a boss (`get_encounter_journal`): what each abilit
 demand to work out informal terms (e.g. "eggs" = Blightscale Spawn). Order of trust: the log for what happened,
 then the guild glossary, then the journal. Entries are cached for a day.
 
+## Maps
+
+`show_map` draws positions from the log on the raid's in-game map: heatmaps of where people got hit or stood,
+where NPCs cast from, and spawn patterns (e.g. "what patterns do the waves come in": each group of casts within
+2s is a volley, and volleys from the same spots are merged into a pattern with how often and when it comes).
+Positions come with damage, heal and cast events (`includeResources`); Warcraft Logs' map id is the game's UiMap id.
+
+Map images and their coordinate bounds come from the game's data via [wago.tools](https://wago.tools) and are
+saved once per raid zone:
+
+```bash
+dotnet run scripts/fetch-map.cs 2610
+```
+
+That writes `web/maps/2610.png` and adds the bounds to `src/WclQuery.Core/Knowledge/maps.json`. A map that isn't
+saved yet is still drawn, on a plain background, and the AI says which id to add.
+
 ## Fight notes
 
 The first time anyone asks about a boss, the AI condenses its journal entry into short fight notes (adds, their
