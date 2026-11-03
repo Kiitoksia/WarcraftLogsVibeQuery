@@ -41,7 +41,15 @@ public sealed record MapActor(string Name, string Class);
 public sealed record MapPoint(double U, double V, int? Actor, string? Label, string? Group);
 
 /// <summary>One map in a view: a single volley, pattern or pull when the view is split, otherwise everything.</summary>
-public sealed record MapPanel(string Title, string? Subtitle, IReadOnlyList<MapPoint> Points);
+public sealed record MapPanel(string Title, string? Subtitle, IReadOnlyList<MapPoint> Points, IReadOnlyList<MapLane>? Lanes = null);
+
+/// <summary>
+/// A moving hazard's path (e.g. a wave): from Start to End, a band (polygon) for its width when known, and ticks marking
+/// where it is after so many seconds. Group is the caster, for colour.
+/// </summary>
+public sealed record MapLane(double[] Start, double[] End, IReadOnlyList<double[]>? Band, IReadOnlyList<MapTick> Ticks, string? Group);
+
+public sealed record MapTick(double U, double V, string Label);
 
 /// <summary>
 /// Positions from the log drawn on the raid's map: as a heatmap or as dots, in one panel or split into several

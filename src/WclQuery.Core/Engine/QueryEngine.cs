@@ -198,6 +198,8 @@ public sealed partial class QueryEngine(
           with split_by pattern, then describe each pattern by compass direction and when it comes (volley number).
           For "is there a safe spot" add hit_ability_id (the damage those waves/adds do to players) and report, per
           pattern, the areas that stayed clean across many occurrences, how much data backs it, and the most-hit areas.
+          The waves' own paths (lanes) come with it: describe where each wave goes and the gaps between lanes; trust
+          lanes that hits confirm, and say when a lane (e.g. the boss's own cast) isn't confirmed.
         - Ninja/early pulls: use get_pull_timeline and identify the first player who engaged.
         - Deaths: get_table or get_events with data_type Deaths.
         - Settings: the user can pin the scope in the site (one pull, or all pulls) and switch on filters (e.g.

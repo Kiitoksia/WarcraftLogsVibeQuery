@@ -18,10 +18,12 @@ public sealed partial class ReportTools
     private const double SpotRadiusYards = 4;
     private const long VolleyGapMs = 2_000;
 
-    // Warcraft Logs positions are hundredths of a yard: y is world X (north), x is world Y (west).
-    private const double WclXToWorldY = 1;
+    // Warcraft Logs positions are hundredths of a yard: y is world X (north) and x points east, i.e. minus world Y
+    // (world Y runs west). Confirmed by facing: WoW facing f (0 = north, counter-clockwise) is logged as -f - 90°.
+    private const double WclXToWorldY = -1;
 
-    private sealed record Located(int Fight, long Time, int ActorId, string Who, double WorldX, double WorldY, int MapId);
+    private sealed record Located(int Fight, long Time, int ActorId, string Who, double WorldX, double WorldY, int MapId,
+        double? Facing = null);
 
     private async Task<ToolOutput> MapAsync(Report report, ToolArgs args, CancellationToken ct)
     {
@@ -56,7 +58,8 @@ public sealed partial class ReportTools
                 }
                 var actor = GetInt(e, side == "source" ? "sourceID" : "targetID") ?? -1;
                 located.Add(new Located(GetInt(e, "fight") ?? 0, (long)(GetDouble(e, "timestamp") ?? 0), actor,
-                    report.ActorName(actor), y / 100, WclXToWorldY * x / 100, mapId));
+                    report.ActorName(actor), y / 100, WclXToWorldY * x / 100, mapId,
+                    side == "source" ? GetDouble(e, "facing") / 100 : null));
             }
         }, ct);
 
@@ -141,6 +144,128 @@ public sealed partial class ReportTools
             .. Thin([.. group.SelectMany(v => outcomes[v].Safe)], maxSafe).Select(l => OutcomePoint(l, "Not hit")),
             .. group.SelectMany(v => outcomes[v].Hits).Select(l => OutcomePoint(l, "Hit")),
         ];
+        // Moving hazards cast from a spot (e.g. waves) travel straight along the caster's facing. With hit data, the
+        // hits give their speed (along the lane over time since the cast) and width (how far to the side hits land).
+        static (double North, double West) Heading(double facing) => (-Math.Sin(facing), -Math.Cos(facing));
+        double? laneSpeed = null, laneHalfWidth = null;
+        var laneHits = 0;
+        if (outcomes is not null)
+        {
+            var speeds = new List<double>();
+            var sideways = new List<double>();
+            foreach (var (v, o) in outcomes)
+            {
+                var casters = v.Events.Where(e => e.Facing is not null).ToList();
+                foreach (var hit in o.Hits)
+                {
+                    var dt = (hit.Time - v.Start) / 1000.0;
+                    var best = casters
+                        .Select(c =>
+                        {
+                            var (n, w) = Heading(c.Facing!.Value);
+                            var (dn, dw) = (hit.WorldX - c.WorldX, hit.WorldY - c.WorldY);
+                            return (Along: dn * n + dw * w, Side: Math.Abs(dn * w - dw * n));
+                        })
+                        .Where(x => x.Along > 0)
+                        .OrderBy(x => x.Side)
+                        .FirstOrDefault();
+                    // Only hits that line up with a lane (within ~30°) say anything about its speed and width.
+                    if (best.Along <= 0 || best.Side > 25 || best.Side > best.Along * 0.58) continue;
+                    laneHits++;
+                    sideways.Add(best.Side);
+                    if (dt > 0.5) speeds.Add(best.Along / dt);
+                }
+            }
+            if (speeds.Count >= 10) laneSpeed = Math.Clamp(speeds.Order().ElementAt(speeds.Count / 2), 2, 60);
+            if (sideways.Count >= 10) laneHalfWidth = Math.Clamp(sideways.Order().ElementAt((int)(sideways.Count * 0.75)), 3, 20);
+        }
+
+        // One lane per (spot, caster) in a group of volleys: the average heading of the casts from that spot.
+        List<(int Spot, string Who, double North, double West, double Spread)> LaneHeadings(IEnumerable<Volley> group)
+        {
+            var list = new List<(int Spot, string Who, double North, double West, double Spread)>();
+            foreach (var g in group.SelectMany(v => v.Events).Where(e => e.Facing is not null && spotOf[e] >= 0)
+                         .GroupBy(e => (Spot: spotOf[e], e.Who)))
+            {
+                var dirs = g.Select(e => Heading(e.Facing!.Value)).ToList();
+                var (n, w) = (dirs.Average(d => d.North), dirs.Average(d => d.West));
+                var len = Math.Sqrt(n * n + w * w);
+                if (len < 1e-6) continue;
+                // Spread: average angle between each cast and the mean, so inconsistent facings are visible.
+                var spread = dirs.Average(d => Math.Acos(Math.Clamp((d.North * n + d.West * w) / len, -1, 1))) * 180 / Math.PI;
+                list.Add((g.Key.Spot, g.Key.Who, n / len, w / len, spread));
+            }
+            return list;
+        }
+        double LaneLength(int spot) => Math.Max(30, 2 * Math.Sqrt(Math.Pow(spots[spot].X - cx, 2) + Math.Pow(spots[spot].Y - cy, 2)));
+        double[] Uv(double wx, double wy) { var (u, v) = ToUv(wx, wy); return [Math.Round(u, 4), Math.Round(v, 4)]; }
+        List<MapLane> Lanes(IEnumerable<Volley> group) => [.. LaneHeadings(group).Select(h =>
+        {
+            var s = spots[h.Spot];
+            var length = LaneLength(h.Spot);
+            var (ex, ey) = (s.X + h.North * length, s.Y + h.West * length);
+            List<double[]>? band = null;
+            if (laneHalfWidth is double hw)
+            {
+                var (px, py) = (-h.West * hw, h.North * hw); // perpendicular
+                band = [Uv(s.X + px, s.Y + py), Uv(ex + px, ey + py), Uv(ex - px, ey - py), Uv(s.X - px, s.Y - py)];
+            }
+            var ticks = new List<MapTick>();
+            if (laneSpeed is double speed)
+                for (var t = 2; speed * t < length; t += 2)
+                {
+                    var p = Uv(s.X + h.North * speed * t, s.Y + h.West * speed * t);
+                    ticks.Add(new MapTick(p[0], p[1], $"{t}s"));
+                }
+            return new MapLane(Uv(s.X, s.Y), Uv(ex, ey), band, ticks, h.Who);
+        })];
+
+        // Which areas of the platform no lane crosses (between the waves), and which ones a lane runs through.
+        void DescribeLanes(StringBuilder sb, IEnumerable<Volley> group)
+        {
+            var headings = LaneHeadings(group);
+            if (headings.Count == 0) return;
+            string[] names = ["north", "north-north-east", "north-east", "east-north-east", "east", "east-south-east", "south-east", "south-south-east",
+                              "south", "south-south-west", "south-west", "west-south-west", "west", "west-north-west", "north-west", "north-north-west"];
+            var groupList = group.ToList();
+            // How many of this pattern's hits line up with each lane: a lane no hits match is unconfirmed.
+            int Support((int Spot, string Who, double North, double West, double Spread) h) => outcomes is null ? -1 :
+                groupList.SelectMany(v => outcomes[v].Hits).Count(hit =>
+                {
+                    var s = spots[h.Spot];
+                    var along = (hit.WorldX - s.X) * h.North + (hit.WorldY - s.Y) * h.West;
+                    var side = Math.Abs((hit.WorldX - s.X) * h.West - (hit.WorldY - s.Y) * h.North);
+                    return along > 0 && side <= (laneHalfWidth ?? 8) * 1.5;
+                });
+            foreach (var h in headings)
+            {
+                var bearing = (Math.Atan2(-h.West, h.North) * 180 / Math.PI + 360) % 360;
+                var cross = laneSpeed is double sp ? $", crosses in ~{LaneLength(h.Spot) / sp:0}s" : "";
+                sb.AppendLine($"    lane: from spot {h.Spot + 1} ({h.Who}) heading {names[(int)Math.Round(bearing / 22.5) % 16]} ({bearing:0}°){cross}" +
+                    (h.Spread > 10 ? $"; facing varied by ~{h.Spread:0}° between occurrences" : "") +
+                    (Support(h) is var n and >= 0 ? $"; {n} of the pattern's hits lie on this lane" : ""));
+            }
+            var hw = laneHalfWidth ?? 8;
+            var clear = new List<string>();
+            var crossed = new List<string>();
+            foreach (var (zone, zx, zy) in ZoneCentres(cx, cy))
+            {
+                var through = headings.Where(h =>
+                {
+                    var s = spots[h.Spot];
+                    var along = (zx - s.X) * h.North + (zy - s.Y) * h.West;
+                    if (along < -hw || along > LaneLength(h.Spot) + hw) return false;
+                    return Math.Abs((zx - s.X) * h.West - (zy - s.Y) * h.North) <= hw;
+                }).ToList();
+                if (through.Count == 0) clear.Add(zone);
+                else crossed.Add(laneSpeed is double sp
+                    ? $"{zone} (~{through.Min(h => Math.Max(0, (zx - spots[h.Spot].X) * h.North + (zy - spots[h.Spot].Y) * h.West) / sp):0}s)"
+                    : zone);
+            }
+            sb.AppendLine($"    between the lanes (no wave path within {hw:0} yd): {(clear.Count == 0 ? "nowhere" : string.Join(", ", clear))}");
+            sb.AppendLine($"    in a lane (when the wave gets there): {string.Join(", ", crossed)}");
+        }
+
         var text = new StringBuilder();
         text.AppendLine(DescribeWindow(report, q));
         text.AppendLine($"{located.Count} positions of the {side} on {gameMap?.Name ?? $"map {mapId}"}" +
@@ -158,7 +283,7 @@ public sealed partial class ReportTools
                 {
                     var members = Members(v);
                     panels.Add(new MapPanel($"Pull {v.Fight} · #{v.Index} at {Clock(v.Seconds)}", Describe(members),
-                        [.. OutcomePoints([v], 600), .. members.Select(SpotPoint)]));
+                        [.. OutcomePoints([v], 600), .. members.Select(SpotPoint)], Lanes([v])));
                 }
                 text.AppendLine($"{volleys.Count} volleys (events within {VolleyGapMs / 1000}s of each other){(volleys.Count > MaxPanels ? $", first {MaxPanels} drawn" : "")}:");
                 foreach (var v in volleys.Take(60))
@@ -185,9 +310,10 @@ public sealed partial class ReportTools
                     var subtitle = $"{group.Count}× · usually volley #{usual} · around {Clock(median)}";
                     if (panels.Count < MaxPanels)
                         panels.Add(new MapPanel($"{name}: spots {g.Key}", subtitle,
-                            [.. OutcomePoints(group, 1200), .. g.First().Members.Select(SpotPoint)]));
+                            [.. OutcomePoints(group, 1200), .. g.First().Members.Select(SpotPoint)], Lanes(group)));
                     var order = string.Join(", ", group.GroupBy(v => v.Index).OrderBy(x => x.Key).Select(x => $"#{x.Key} ×{x.Count()}"));
                     text.AppendLine($"  {name}: spots {g.Key}; seen {group.Count}× in {group.Select(v => v.Fight).Distinct().Count()} pulls; volley number {order}");
+                    DescribeLanes(text, group);
                     if (outcomes is not null) DescribeOutcomes(text, group, outcomes, cx, cy);
                 }
                 break;
@@ -223,6 +349,14 @@ public sealed partial class ReportTools
         if (outcomes is not null)
             text.AppendLine($"Hits: where players stood when hit by the ability within {windowMs / 1000}s of a volley. Not hit: where players who weren't hit stood in that window (sampled from their casts). " +
                 "Areas are around the spots' centre: centre (<15 yd), mid (15-35 yd), edge. Call an area safe only if players stood there across several occurrences without hits; say how much data there is, and if hits are spread everywhere, say there's no reliable safe spot.");
+        if (laneSpeed is not null || laneHalfWidth is not null)
+            text.AppendLine($"Wave lanes: each cast travels straight along the caster's facing" +
+                (laneSpeed is double sp ? $" at ~{sp:0.#} yd/s" : "") +
+                (laneHalfWidth is double hw ? $"; 90% of hits land within {hw:0} yd of a lane" : "") +
+                $" (from {laneHits} hits that line up with a lane). Lanes are drawn on the maps with where the wave is every 2s. " +
+                "A lane with no hits on it while players stood in its path is unconfirmed: that caster's waves may not travel that way (say so).");
+        else if (split is "volley" or "pattern")
+            text.AppendLine("Wave lanes are drawn from each caster's facing; add hit_ability_id to also estimate their speed and width.");
         if (truncated) text.AppendLine($"WARNING: stopped after {MaxCountedEvents:N0} events; narrow it with ability_id, phase or fewer pulls.");
         text.AppendLine("The map is shown to the user below your answer; describe what it shows (spots by direction), don't draw it in text.");
 
@@ -297,6 +431,19 @@ public sealed partial class ReportTools
         // A player who was hit in the window isn't a "safe" sample for it, wherever else they stood.
         foreach (var (v, o) in outcomes) o.Safe.RemoveAll(l => hitBy[v].Contains(l.ActorId));
         return outcomes;
+    }
+
+    /// <summary>Centre points of the areas <see cref="Zone"/> names: centre, then mid (25 yd) and edge (45 yd) per direction.</summary>
+    private static IEnumerable<(string Zone, double X, double Y)> ZoneCentres(double cx, double cy)
+    {
+        string[] names = ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"];
+        yield return ("centre", cx, cy);
+        foreach (var (radius, suffix) in new[] { (25.0, ", mid"), (45.0, " edge") })
+            for (var i = 0; i < 8; i++)
+            {
+                var a = i * Math.PI / 4; // clockwise from north; world Y runs west
+                yield return (names[i] + suffix, cx + radius * Math.Cos(a), cy - radius * Math.Sin(a));
+            }
     }
 
     /// <summary>A coarse area of the platform around the spots' centre, e.g. "north-west edge" or "centre".</summary>
@@ -452,6 +599,8 @@ public sealed partial class ReportTools
                 have no position: use the damage events instead (e.g. killing blows: DamageTaken with filter
                 "overkill > 0"). For "what patterns do the waves come in", map the ability's NPC casts with
                 split_by pattern. For "is there a safe spot per pattern", add hit_ability_id (the damage that hits players).
+                Each cast's path is drawn from the caster's facing (straight line across the room, with timing when
+                hit_ability_id gives the speed), so you can describe where waves go and the gaps between them.
                 split_by pattern. Returns the spots (by compass direction) and patterns as text.
                 """,
             InputSchema = new() { Properties = props, Required = ["data_type"] },

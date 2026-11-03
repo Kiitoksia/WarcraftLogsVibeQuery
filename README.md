@@ -127,6 +127,9 @@ where NPCs cast from, and spawn patterns (e.g. "what patterns do the waves come 
 2s is a volley, and volleys from the same spots are merged into a pattern with how often and when it comes).
 With `hit_ability_id`, each pattern also shows where players got hit after it (red) against where unhit players
 stood (green), and the AI lists the areas that stayed clean across occurrences: a data-driven "safe spot" check.
+Waves (and anything else cast from a spot) are also drawn as lanes: a straight path along the caster's facing,
+with its speed and width estimated from the hits and markers for where it is every 2s, so the gaps between waves
+show even where nobody stood.
 Positions come with damage, heal and cast events (`includeResources`); Warcraft Logs' map id is the game's UiMap id.
 
 Map images and their coordinate bounds come from the game's data via [wago.tools](https://wago.tools) and are

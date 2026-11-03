@@ -790,6 +790,7 @@
       ctx.textBaseline = "middle";
       ctx.fillText(spot.label, x, y + 0.5);
     }
+    for (const lane of p.lanes || []) drawLane(ctx, lane, toX, toY, scale, pointColor({ group: lane.group }));
     for (const pt of points) {
       const x = toX(pt.u), y = toY(pt.v);
       const notHit = pt.group === "Not hit";
@@ -810,6 +811,56 @@
         ctx.fillText(pt.label, x, y + 0.5);
       }
     }
+  }
+
+  // A moving hazard's path: its width as a shaded band, an arrow along it, and where it is every couple of seconds.
+  function drawLane(ctx, lane, toX, toY, scale, color) {
+    const [sx, sy] = [toX(lane.start[0]), toY(lane.start[1])];
+    const [ex, ey] = [toX(lane.end[0]), toY(lane.end[1])];
+    ctx.save();
+    if (lane.band?.length) {
+      ctx.beginPath();
+      lane.band.forEach(([u, v], i) => (i ? ctx.lineTo(toX(u), toY(v)) : ctx.moveTo(toX(u), toY(v))));
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.18;
+      ctx.fill();
+      ctx.globalAlpha = 0.5;
+      ctx.lineWidth = 1 * scale;
+      ctx.strokeStyle = color;
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 0.95;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 2.5 * scale;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+    const angle = Math.atan2(ey - sy, ex - sx);
+    const head = 10 * scale;
+    ctx.beginPath();
+    ctx.moveTo(ex, ey);
+    ctx.lineTo(ex - head * Math.cos(angle - 0.45), ey - head * Math.sin(angle - 0.45));
+    ctx.lineTo(ex - head * Math.cos(angle + 0.45), ey - head * Math.sin(angle + 0.45));
+    ctx.closePath();
+    ctx.fill();
+    ctx.font = `600 ${9 * scale}px Inter, system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    for (const t of lane.ticks || []) {
+      const [x, y] = [toX(t.u), toY(t.v)];
+      ctx.beginPath();
+      ctx.arc(x, y, 2.5 * scale, 0, Math.PI * 2);
+      ctx.fillStyle = "#111";
+      ctx.fill();
+      ctx.lineWidth = 1.5 * scale;
+      ctx.stroke();
+      ctx.fillStyle = "#fff";
+      ctx.fillText(t.label, x, y - 4 * scale);
+    }
+    ctx.restore();
   }
 
   // Density: soft blobs summed on a hidden canvas, then coloured blue → green → yellow → red by intensity.
