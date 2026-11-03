@@ -62,6 +62,12 @@ a:hover { color: var(--accent-hover); }
   .brand h1 { font-size: 14px; }
   .user-name { display: none; }
 }
+/* Phones: the W mark stands in for the title so the header buttons fit. */
+@media (max-width: 520px) {
+  .brand h1 { display: none; }
+  .topbar { padding: 10px 12px; }
+  .topbar-actions { gap: 6px; }
+}
 
 /* ---- Buttons & inputs ---- */
 
@@ -75,6 +81,8 @@ a:hover { color: var(--accent-hover); }
 .btn.primary:disabled { opacity: 0.55; cursor: wait; }
 .btn.small { padding: 7px 12px; font-size: 13px; background: var(--accent); color: var(--accent-text); }
 .btn.ghost { background: none; color: var(--text); border: 1px solid var(--border-strong); padding: 7px 12px; font-size: 13px; }
+a.btn { display: inline-flex; align-items: center; text-decoration: none; white-space: nowrap; }
+a.btn.ghost:hover { color: var(--text); }
 .btn.ghost:hover { border-color: var(--accent); }
 .btn.link { background: none; color: var(--accent); padding: 4px 6px; font-weight: 500; }
 .btn.link.small { font-size: 12px; padding: 2px 0; }

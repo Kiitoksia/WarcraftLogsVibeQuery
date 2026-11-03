@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Ula'tek Wave Patterns · Warcraft Log Query Engine</title>
+  <meta name="description" content="Every Gore Rattle and boss wave combination on Ula'tek, drawn relative to the boss with the safe spot for each.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+  <style>
+/* Layout: a raid reference sheet. Header with the fight's facts, the volley sequence as a strip,
+   then one card per wave combination (map left, call-outs right), stacking on phones. */
+:root {
+  /* The site's own dark palette (see ../styles.css), plus colours for the map layers. */
+  --bg: #0b0d12; --surface: #141821; --surface-2: #1b2030; --line: #222838; --panel: #10131a;
+  --text: #e6e8ee; --muted: #9aa3b2; --accent: #e0b04a; --accent-text: #1a1407;
+  --teal: #4fd1c5; --boss: #b794f4; --hit: #ff5a4f; --safe: #5ee08a; --chip: #1b2030;
+  --font-display: "Cinzel", Georgia, serif;
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-data: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 400 15px/1.55 var(--font-body); }
+a { color: var(--accent); }
+.topbar {
+  position: sticky; top: 0; z-index: 10; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px max(20px, env(safe-area-inset-right, 0px)) 10px max(20px, env(safe-area-inset-left, 0px));
+  background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; color: var(--text); text-decoration: none; }
+.brand-mark { width: 26px; height: 26px; border-radius: 6px; flex: none; display: grid; place-items: center; background: var(--accent); color: var(--accent-text); font-weight: 700; }
+.brand span:last-child { font: 700 17px/1.1 var(--font-display); letter-spacing: 0.04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.back { font-size: 14px; white-space: nowrap; }
+main {
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 56px;
+}
+@media (max-width: 640px) { .brand span:last-child { font-size: 14px; } }
+.wrap { max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(26px, 4vw, 38px); letter-spacing: 0.02em; }
+h2 { font-size: 20px; letter-spacing: 0.03em; }
+h3 { font-size: 17px; letter-spacing: 0.02em; }
+p { margin: 0; }
+.muted { color: var(--muted); }
+.eyebrow { font: 600 12px var(--font-body); text-transform: uppercase; letter-spacing: 0.12em; color: var(--accent); }
+.num { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+
+.wrap > header { display: flex; flex-direction: column; gap: 10px; }
+.wrap > header .lede { max-width: 68ch; color: var(--text); }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); }
+.facts b { color: var(--text); font-weight: 600; }
+
+.howto { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.howto section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 13px; }
+.key { display: inline-flex; align-items: center; gap: 7px; }
+.swatch { width: 14px; height: 14px; border-radius: 50%; flex: none; border: 1px solid rgba(0,0,0,.35); }
+.swatch.lane { border-radius: 2px; height: 6px; width: 22px; border: 0; }
+.swatch.band { border-radius: 3px; height: 12px; width: 22px; opacity: .55; border: 0; }
+.howto ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+
+.sequence { display: flex; flex-direction: column; gap: 10px; }
+.strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; }
+.step { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.step .n { font: 600 12px var(--font-data); color: var(--muted); }
+.step .opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  display: inline-flex; align-items: baseline; gap: 5px; padding: 2px 8px; border-radius: 999px;
+  background: var(--chip); color: var(--text); font-size: 13px; text-decoration: none; border: 1px solid transparent;
+}
+.chip:hover, .chip:focus-visible { border-color: var(--accent); outline: none; }
+.chip small { color: var(--muted); font-family: var(--font-data); font-size: 11px; }
+.chip.boss { box-shadow: inset 3px 0 0 var(--boss); }
+
+.cards { display: flex; flex-direction: column; gap: 18px; }
+.card {
+  display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 18px 24px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px;
+  scroll-margin-top: 16px;
+}
+@media (max-width: 820px) { .card { grid-template-columns: minmax(0, 1fr); } }
+.card .head { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+.card .letter { font: 700 22px var(--font-display); color: var(--accent); }
+.card .meta { font-size: 13px; color: var(--muted); }
+.map { width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--line); background: var(--surface-2); display: block; }
+.calls { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.verdict { border-radius: 8px; padding: 12px 14px; background: var(--surface-2); display: flex; flex-direction: column; gap: 4px; }
+.verdict .label { font: 600 12px var(--font-body); text-transform: uppercase; letter-spacing: 0.1em; }
+.verdict.good .label { color: var(--safe); }
+.verdict.weak .label { color: var(--accent); }
+.verdict .spot { font: 600 17px var(--font-body); }
+.verdict .why { font-size: 13px; color: var(--muted); }
+.calls dl { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px; font-size: 14px; }
+.calls dt { color: var(--muted); }
+.calls dd { margin: 0; min-width: 0; }
+.tag { display: inline-block; padding: 0 6px; margin: 1px 4px 1px 0; border-radius: 4px; background: var(--chip); font-size: 13px; }
+.tag.hit { box-shadow: inset 2px 0 0 var(--hit); }
+.tag.ok { box-shadow: inset 2px 0 0 var(--safe); }
+footer { font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 6px; max-width: 80ch; }
+@media (prefers-reduced-motion: no-preference) { .card:target { animation: flash 1.2s ease-out; } }
+@keyframes flash { from { box-shadow: 0 0 0 3px var(--accent); } to { box-shadow: 0 0 0 0 transparent; } }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="../"><span class="brand-mark" aria-hidden="true">W</span><span>Warcraft Log Query Engine</span></a>
+  <a class="back" href="../">Ask a question</a>
+</header>
+<main>
+<div class="wrap">
+  <header>
+    <span class="eyebrow">The Venomous Abyss · Ula'tek · Gore Rattle waves</span>
+    <h1>Ula'tek Wave Patterns</h1>
+    <p class="lede">Every wave volley from report <span class="num">3t7kArhXbNVPKzcq</span>, turned so Ula'tek is always at the top of the map. Seen from the boss, the waves follow a short script: each combination below shows where the waves start, where they go, where people got hit, and the spot that stayed clean.</p>
+    <div class="facts" id="facts"></div>
+  </header>
+
+  <div class="howto">
+    <section>
+      <h2>Reading the maps</h2>
+      <div class="legend" id="legend"></div>
+    </section>
+    <section>
+      <h2>Directions</h2>
+      <ul>
+        <li><b>Boss's left / right</b> are as Ula'tek faces into the platform (her left is the right of the map).</li>
+        <li><b>Near</b> is the half by the boss, <b>far</b> the half opposite her.</li>
+        <li><b>Mid</b> is 15–35 yd from the centre, <b>edge</b> beyond that.</li>
+      </ul>
+    </section>
+  </div>
+
+  <section class="sequence">
+    <h2>Volley order</h2>
+    <p class="muted">Which combination each volley was, across all pulls that reached it. Click one to jump to its map.</p>
+    <div class="strip" id="strip"></div>
+  </section>
+
+  <section class="cards" id="cards"></section>
+
+  <footer>
+    <p><b>How this was worked out.</b> Gore Rattle waves travel in a straight line along the way the Rattle faced when it cast (86% of hits fall within 15° of that line), at about 14 yd per second, about 11 yd either side. Hits are where players stood when Caustic Waves hit them within 10 seconds of a volley; "not hit" is where everyone else stood.</p>
+    <p><b>The boss's sweep</b> isn't in the log. Its side is read from the raid: in the 3 seconds after every boss cast, everyone sidesteps about 12 yd to one side. The covered half is drawn as 5 parallel waves, 10 yd apart, starting 4 yd beside her; that spacing comes from the raid's description, not the log.</p>
+    <p>"Clean" only covers places someone actually stood. A safe spot here means it worked every time people stood there, which is good evidence but not a guarantee.</p>
+  </footer>
+</div>
+</main>
+
+<script src="ula-tek-waves.data.js"></script>
+<script>
+// Exported once from the report (see README: Guides); the fight doesn't change between weeks.
+const DATA = window.WAVE_DATA;
+const MAP_IMAGE = "../maps/2610.png";
+
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+
+// ---- Directions from the boss's point of view (maps have the boss at the top) ----
+const COMPASS = {
+  "north": "beside the boss", "north-east": "near, boss's left", "east": "boss's left", "south-east": "far, boss's left",
+  "south": "far side", "south-west": "far, boss's right", "west": "boss's right", "north-west": "near, boss's right",
+};
+function zoneName(z) {
+  z = z.trim();
+  if (z === "centre") return "centre";
+  const m = z.match(/^([a-z-]+?)(, mid| edge)$/);
+  if (!m) return z;
+  return `${COMPASS[m[1]] || m[1]} (${m[2] === " edge" ? "edge" : "mid"})`;
+}
+const bearingName = (deg) => ["beside the boss", "near, boss's left", "boss's left", "far, boss's left", "far side", "far, boss's right", "boss's right", "near, boss's right"][Math.round(deg / 45) % 8];
+
+// ---- Parse each pattern's notes ----
+function parse(panel) {
+  const lines = (panel.notes || "").split("\n").map((l) => l.trim());
+  const get = (prefix) => (lines.find((l) => l.startsWith(prefix)) || "").slice(prefix.length).trim();
+  const head = lines[0] || "";
+  const seen = head.match(/seen (\d+)× in (\d+) pulls/);
+  const volleys = [...(head.match(/volley number (.*)$/)?.[1] || "").matchAll(/#(\d+) ×(\d+)/g)].map((m) => ({ n: +m[1], count: +m[2] }));
+  const between = get("between the lanes").replace(/^\([^)]*\):\s*/, "");
+  const outcome = get("outcome:");
+  const listOf = (s) => s && s !== "nowhere" && !s.startsWith("none") ? s.split(/;\s*/) : [];
+  const safe = listOf(get("safe-looking areas:")).map((s) => {
+    const m = s.match(/^(.*?) \(players there in (\d+) of (\d+), clean (\d+)×, (\d+) hits \/ (\d+) not hit\)/);
+    return m ? { zone: m[1], present: +m[2], of: +m[3], clean: +m[4], hits: +m[5], notHit: +m[6] } : null;
+  }).filter(Boolean);
+  const risky = listOf(get("most-hit areas:")).map((s) => {
+    const m = s.match(/^(.*?) \((\d+) hits \/ (\d+) not hit\)/);
+    return m ? { zone: m[1], hits: +m[2], notHit: +m[3] } : null;
+  }).filter(Boolean);
+  const gaps = between ? splitZones(between) : [];
+  const rate = outcome.match(/\((\d+)% hit\)/)?.[1];
+  return { seen: seen ? { times: +seen[1], pulls: +seen[2] } : null, volleys, gaps, safe, risky, rate: rate ? +rate : null };
+}
+// "south-west, mid, north-west, mid, south edge" -> ["south-west, mid", "north-west, mid", "south edge"]
+function splitZones(s) {
+  const parts = s.split(", "), out = [];
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i + 1] === "mid") { out.push(parts[i] + ", mid"); i++; } else out.push(parts[i]);
+  }
+  return out;
+}
+
+// ---- Who fired: names for each combination ----
+const spots = DATA.spots;
+const centre = { u: spots.reduce((a, s) => a + s.u, 0) / spots.length, v: spots.reduce((a, s) => a + s.v, 0) / spots.length };
+const bearingOf = (p) => (Math.atan2(p.u - centre.u, -(p.v - centre.v)) * 180 / Math.PI + 360) % 360;
+function describe(panel) {
+  const fired = panel.points.filter((p) => p.label && p.label !== "B");
+  const boss = fired.find((p) => /Ula'tek/.test(p.group));
+  const rattles = fired.filter((p) => !/Ula'tek/.test(p.group)).map((p) => bearingName(bearingOf(p)));
+  if (boss) {
+    const side = boss.group.match(/waves on its (left|right)/)?.[1];
+    return { boss: true, title: side ? `Boss sweeps her ${side} · Rattle on ${rattles.join(" + ")}` : `Boss sweep (side unclear) · Rattle on ${rattles.join(" + ")}` };
+  }
+  return { boss: false, title: `Rattles: ${rattles.join(" + ")}` };
+}
+
+// ---- Map drawing ----
+const img = new Image();
+img.src = MAP_IMAGE;
+const ready = new Promise((r) => { img.onload = r; img.onerror = r; });
+
+function drawPanel(canvas, panel) {
+  const [u0, v0, u1, v1] = DATA.crop;
+  const W = DATA.map.width, H = DATA.map.height;
+  const width = 760, height = Math.round(width * ((v1 - v0) * H) / ((u1 - u0) * W));
+  const ratio = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = width * ratio; canvas.height = height * ratio;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.imageSmoothingQuality = "high";
+  ctx.fillStyle = css("--surface-2"); ctx.fillRect(0, 0, width, height);
+  if (img.naturalWidth) ctx.drawImage(img, u0 * W, v0 * H, (u1 - u0) * W, (v1 - v0) * H, 0, 0, width, height);
+  ctx.fillStyle = "rgba(0,0,0,0.28)"; ctx.fillRect(0, 0, width, height);
+  const X = (u) => ((u - u0) / (u1 - u0)) * width, Y = (v) => ((v - v0) / (v1 - v0)) * height;
+  const s = width / 480;
+  const colors = { hit: css("--hit"), safe: css("--safe"), teal: css("--teal"), boss: css("--boss"), accent: css("--accent") };
+  const colorFor = (g) => /Ula'tek/.test(g || "") ? colors.boss : colors.teal;
+
+  // Unused spawn spots, faint.
+  const used = new Set(panel.points.filter((p) => p.label).map((p) => p.label));
+  for (const sp of spots) {
+    if (used.has(sp.label)) continue;
+    ctx.strokeStyle = "rgba(255,255,255,0.45)"; ctx.lineWidth = 1.2 * s; ctx.setLineDash([3 * s, 3 * s]);
+    ctx.beginPath(); ctx.arc(X(sp.u), Y(sp.v), 7 * s, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+  }
+  // Players: not hit (green), hit (red).
+  for (const p of panel.points) {
+    if (p.group !== "Not hit") continue;
+    ctx.globalAlpha = 0.4; ctx.fillStyle = colors.safe;
+    ctx.beginPath(); ctx.arc(X(p.u), Y(p.v), 1.9 * s, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  // Wave lanes: band, arrow, 2s marks.
+  for (const lane of panel.lanes || []) {
+    const c = colorFor(lane.group);
+    const [sx, sy, ex, ey] = [X(lane.start[0]), Y(lane.start[1]), X(lane.end[0]), Y(lane.end[1])];
+    if (lane.band) {
+      ctx.beginPath(); lane.band.forEach(([u, v], i) => i ? ctx.lineTo(X(u), Y(v)) : ctx.moveTo(X(u), Y(v))); ctx.closePath();
+      ctx.fillStyle = c; ctx.globalAlpha = 0.16; ctx.fill(); ctx.globalAlpha = 1;
+    }
+    ctx.strokeStyle = c; ctx.fillStyle = c; ctx.lineWidth = 2.2 * s;
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke();
+    const a = Math.atan2(ey - sy, ex - sx), h = 8 * s;
+    ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(ex - h * Math.cos(a - 0.45), ey - h * Math.sin(a - 0.45)); ctx.lineTo(ex - h * Math.cos(a + 0.45), ey - h * Math.sin(a + 0.45)); ctx.closePath(); ctx.fill();
+    ctx.font = `600 ${8 * s}px "JetBrains Mono", monospace`; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+    for (const t of lane.ticks || []) {
+      ctx.fillStyle = "#111"; ctx.beginPath(); ctx.arc(X(t.u), Y(t.v), 2.2 * s, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = c; ctx.lineWidth = 1.2 * s; ctx.stroke();
+      ctx.fillStyle = "#fff"; ctx.fillText(t.label, X(t.u), Y(t.v) - 3 * s);
+    }
+  }
+  for (const p of panel.points) {
+    if (p.group !== "Hit") continue;
+    ctx.fillStyle = colors.hit; ctx.strokeStyle = "rgba(0,0,0,.8)"; ctx.lineWidth = 1 * s;
+    ctx.beginPath(); ctx.arc(X(p.u), Y(p.v), 3.4 * s, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  }
+  // Spawn markers and the boss.
+  for (const p of panel.points) {
+    if (!p.label) continue;
+    const isBossMark = p.label === "B";
+    const c = isBossMark || /Ula'tek/.test(p.group) ? colors.boss : colors.teal;
+    const x = X(p.u), y = Y(p.v);
+    ctx.fillStyle = c; ctx.strokeStyle = "rgba(0,0,0,.85)"; ctx.lineWidth = 1.5 * s;
+    ctx.beginPath(); ctx.arc(x, y, (isBossMark ? 10 : 8) * s, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    if (isBossMark) {
+      ctx.fillStyle = "#111"; ctx.font = `700 ${10 * s}px "Cinzel", serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("B", x, y + 0.5);
+    }
+  }
+}
+
+// ---- Page ----
+const panels = DATA.panels.map((p, i) => ({ panel: p, id: `combo-${String.fromCharCode(97 + i)}`, letter: String.fromCharCode(65 + i), info: parse(p), name: describe(p) }))
+  .filter((x) => (x.info.seen?.times || 0) >= 3); // one-offs aren't a pattern
+
+const totalVolleys = DATA.panels.reduce((a, p) => a + (parse(p).seen?.times || 0), 0);
+const facts = document.getElementById("facts");
+for (const [k, v] of [["Pulls", "29"], ["Volleys", String(totalVolleys)], ["Combinations", String(panels.length)], ["Wave speed", "~14 yd/s"], ["Crosses the platform", "~8 s"]]) {
+  const span = el("span"); span.append(el("span", null, k + " "), el("b", "num", v)); facts.append(span);
+}
+
+const legend = document.getElementById("legend");
+for (const [cls, color, text] of [
+  ["", "--boss", "Ula'tek (B) and her sweep"], ["", "--teal", "Gore Rattle spawn"], ["lane", "--teal", "Rattle wave path (marks every 2 s)"],
+  ["band", "--boss", "Area the boss's 5 waves cover"], ["", "--hit", "Player hit"], ["", "--safe", "Player not hit"],
+]) {
+  const k = el("span", "key"); const sw = el("span", "swatch " + cls); sw.dataset.color = color; k.append(sw, el("span", null, text)); legend.append(k);
+}
+function paintLegend() { for (const sw of legend.querySelectorAll(".swatch")) sw.style.background = css(sw.dataset.color); }
+
+// Volley strip: for each volley number, the combinations it was.
+const strip = document.getElementById("strip");
+const byVolley = new Map();
+for (const x of panels) for (const v of x.info.volleys) {
+  if (!byVolley.has(v.n)) byVolley.set(v.n, []);
+  byVolley.get(v.n).push({ x, count: v.count });
+}
+for (const n of [...byVolley.keys()].sort((a, b) => a - b)) {
+  const step = el("div", "step"); step.append(el("span", "n", `Volley #${n}`));
+  const opts = el("div", "opts");
+  for (const { x, count } of byVolley.get(n).sort((a, b) => b.count - a.count)) {
+    const a = el("a", "chip" + (x.name.boss ? " boss" : "")); a.href = "#" + x.id;
+    a.append(el("span", null, x.letter), el("small", null, `${count}×`));
+    a.title = x.name.title;
+    opts.append(a);
+  }
+  step.append(opts); strip.append(step);
+}
+
+const cards = document.getElementById("cards");
+const canvases = [];
+for (const x of panels) {
+  const { info } = x;
+  const card = el("article", "card"); card.id = x.id;
+  const head = el("div", "head");
+  head.append(el("span", "letter", x.letter), el("h3", null, x.name.title));
+  const vols = info.volleys.map((v) => `#${v.n}${info.volleys.length > 1 ? ` (${v.count}×)` : ""}`).join(", ");
+  head.append(el("span", "meta", `Seen ${info.seen.times}× in ${info.seen.pulls} pulls · volley ${vols}${info.rate != null ? ` · ${info.rate}% of players hit` : ""}`));
+  card.append(head);
+
+  const canvas = el("canvas", "map"); canvas.setAttribute("role", "img");
+  canvas.setAttribute("aria-label", `Map of combination ${x.letter}: ${x.name.title}`);
+  card.append(canvas); canvases.push({ canvas, panel: x.panel });
+
+  const calls = el("div", "calls");
+  // Safe spot: an area between the wave paths where players stood across occurrences without hits.
+  const inGap = (z) => info.gaps.includes(z);
+  const best = info.safe.find((s) => inGap(s.zone) && s.hits === 0 && s.present >= 3) || info.safe.find((s) => s.hits === 0 && s.present >= 3);
+  const v = el("div", "verdict " + (best && inGap(best.zone) ? "good" : "weak"));
+  if (best) {
+    v.append(el("span", "label", inGap(best.zone) ? "Safe spot" : "Clean spot, but on a wave path"),
+      el("span", "spot", zoneName(best.zone)),
+      el("span", "why", `Clean all ${best.clean} times people stood there (${best.notHit} times not hit, 0 hits)${inGap(best.zone) ? ", and no wave path crosses it." : ". A wave does cross it, so timing matters."}`));
+  } else {
+    v.append(el("span", "label", "No proven spot"), el("span", "why", "Not enough clean data for this combination."));
+  }
+  calls.append(v);
+
+  const dl = el("dl");
+  const add = (term, nodes) => { if (!nodes.length) return; const dd = el("dd"); dd.append(...nodes); dl.append(el("dt", null, term), dd); };
+  add("Also clean", info.safe.filter((s) => s !== best && s.hits === 0 && s.present >= 3)
+    .map((s) => el("span", "tag ok", `${zoneName(s.zone)} · ${s.clean}/${s.present}`)));
+  add("Between paths", info.gaps.map((z) => el("span", "tag", zoneName(z))));
+  add("Got hit", info.risky.filter((r) => r.hits > 0).map((r) => el("span", "tag hit", `${zoneName(r.zone)} · ${r.hits} hit${r.hits === 1 ? "" : "s"}`)));
+  calls.append(dl);
+  card.append(calls);
+  cards.append(card);
+}
+
+function drawAll() { paintLegend(); for (const { canvas, panel } of canvases) drawPanel(canvas, panel); }
+drawAll();
+ready.then(drawAll);
+document.fonts?.ready.then(drawAll);
+</script>
+</body>
+</html>
