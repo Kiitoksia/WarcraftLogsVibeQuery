@@ -41,7 +41,8 @@ public sealed record MapActor(string Name, string Class);
 public sealed record MapPoint(double U, double V, int? Actor, string? Label, string? Group);
 
 /// <summary>One map in a view: a single volley, pattern or pull when the view is split, otherwise everything.</summary>
-public sealed record MapPanel(string Title, string? Subtitle, IReadOnlyList<MapPoint> Points, IReadOnlyList<MapLane>? Lanes = null);
+public sealed record MapPanel(string Title, string? Subtitle, IReadOnlyList<MapPoint> Points, IReadOnlyList<MapLane>? Lanes = null,
+    string? Notes = null);
 
 /// <summary>
 /// A moving hazard's path (e.g. a wave): from Start to End, a band (polygon) for its width when known, and ticks marking

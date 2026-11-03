@@ -84,6 +84,12 @@ switch (command)
         if (output.Link is not null) Console.WriteLine($"[link] {output.Link.Label}: {output.Link.Url}");
         if (output.Chart is not null)
             Console.WriteLine($"[chart] {output.Chart.Title}: {output.Chart.Series.Count} series × {output.Chart.Series[0].Points.Count} points, every {output.Chart.IntervalSec:0.###}s from {output.Chart.StartSec:0.#}s");
+        // WCLQ_MAP_JSON=<path>: also save a map's data (as the site gets it), e.g. to build a standalone page.
+        if (output.Map is not null && Environment.GetEnvironmentVariable("WCLQ_MAP_JSON") is { Length: > 0 } mapPath)
+        {
+            File.WriteAllText(mapPath, JsonSerializer.Serialize(output.Map, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+            Console.WriteLine($"[map] saved to {mapPath}");
+        }
         break;
     }
 

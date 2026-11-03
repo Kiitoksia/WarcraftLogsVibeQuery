@@ -351,13 +351,16 @@ public sealed partial class ReportTools
                     var atUsual = group.Where(v => v.Index == usual).Select(v => v.Seconds).Order().ToList();
                     var median = atUsual[atUsual.Count / 2];
                     var subtitle = $"{group.Count}× · usually volley #{usual} · around {Clock(median)}";
+                    var order = string.Join(", ", group.GroupBy(v => v.Index).OrderBy(x => x.Key).Select(x => $"#{x.Key} ×{x.Count()}"));
+                    // The pattern's details go in the text and with its map, so the site (or an export) can show them.
+                    var detail = new StringBuilder();
+                    detail.AppendLine($"  {name}: spots {g.Key}; seen {group.Count}× in {group.Select(v => v.Fight).Distinct().Count()} pulls; volley number {order}");
+                    DescribeLanes(detail, group);
+                    if (outcomes is not null) DescribeOutcomes(detail, group, outcomes, cx, cy);
+                    text.Append(detail);
                     if (panels.Count < MaxPanels)
                         panels.Add(new MapPanel($"{name}: spots {g.Key}", subtitle,
-                            [.. OutcomePoints(group, 1200), .. g.First().Members.Select(SpotPoint)], Lanes(group)));
-                    var order = string.Join(", ", group.GroupBy(v => v.Index).OrderBy(x => x.Key).Select(x => $"#{x.Key} ×{x.Count()}"));
-                    text.AppendLine($"  {name}: spots {g.Key}; seen {group.Count}× in {group.Select(v => v.Fight).Distinct().Count()} pulls; volley number {order}");
-                    DescribeLanes(text, group);
-                    if (outcomes is not null) DescribeOutcomes(text, group, outcomes, cx, cy);
+                            [.. OutcomePoints(group, 1200), .. g.First().Members.Select(SpotPoint)], Lanes(group), detail.ToString().Trim()));
                 }
                 break;
 
