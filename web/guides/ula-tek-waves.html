@@ -158,6 +158,12 @@ footer { font-size: 13px; color: var(--muted); display: flex; flex-direction: co
   </section>
 
   <section class="sequence">
+    <h2>Where to stand</h2>
+    <p class="muted">Worked out from the wave paths of every combination in this tab, with the boss at the top. Amber: no wave path from any combination crosses it. Green: clear of the wave paths of the Gore Rattle volley that comes right after a boss wave.</p>
+    <article class="card" id="stand"></article>
+  </section>
+
+  <section class="sequence">
     <h2>Combinations, most players hit first</h2>
     <p class="muted">The ones that caused the most hits across these pulls come first.</p>
   </section>
@@ -181,6 +187,8 @@ const SIDES = [
 ];
 let DATA, spots, centre;
 const MAP_IMAGE = "../maps/2610.png";
+// The map image spans 1162.5 yd across (UiMapAssignment bounds for map 2610), for measuring areas in yards.
+const MAP_YARDS_WIDE = 1162.5;
 
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
@@ -265,6 +273,15 @@ function drawPanel(canvas, panel) {
   const s = width / 480;
   const colors = { hit: css("--hit"), safe: css("--safe"), teal: css("--teal"), boss: css("--boss"), accent: css("--accent") };
   const colorFor = (g) => /Ula'tek/.test(g || "") ? colors.boss : colors.teal;
+
+  // "Where to stand" map: one-yard cells, the volley-after-a-boss-wave area under the always-clear one.
+  for (const area of panel.areas || []) {
+    const cw = (area.du / (u1 - u0)) * width, ch = (area.dv / (v1 - v0)) * height;
+    ctx.fillStyle = area.kind === "all" ? colors.accent : colors.safe;
+    ctx.globalAlpha = area.kind === "all" ? 0.85 : 0.3;
+    for (const [u, v] of area.cells) ctx.fillRect(X(u) - cw / 2, Y(v) - ch / 2, cw + 0.5, ch + 0.5);
+    ctx.globalAlpha = 1;
+  }
 
   // Unused spawn spots, faint.
   const used = new Set(panel.points.filter((p) => p.label).map((p) => p.label));
@@ -416,7 +433,113 @@ for (const x of [...panels].sort((a, b) => b.info.hits - a.info.hits || b.info.s
   cards.append(card);
 }
 
+renderStand(panels);
 drawAll();
+}
+
+// Areas no wave path crosses: every combination in the tab, and the volley right after each boss wave.
+function standAreas(panels) {
+  const W = DATA.map.width, H = DATA.map.height, yd = W / MAP_YARDS_WIDE;
+  const px = (u, v) => [u * W, v * H];
+  const ring = spots.map((sp) => px(sp.u, sp.v));
+  const c = [ring.reduce((a, q) => a + q[0], 0) / ring.length, ring.reduce((a, q) => a + q[1], 0) / ring.length];
+  const radius = Math.max(...ring.map((q) => Math.hypot(q[0] - c[0], q[1] - c[1]))) / yd - 8; // stay off the outer rim
+  const bandsOf = (list) => list.flatMap((x) => (x.panel.lanes || []).filter((l) => l.band).map((l) => l.band.map(([u, v]) => px(u, v))));
+  const inPoly = (q, poly) => { let inside = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > q[1]) !== (yj > q[1]) && q[0] < (xj - xi) * (q[1] - yi) / (yj - yi) + xi) inside = !inside; } return inside; };
+  const bossVolleys = new Set(panels.filter((x) => x.name.boss).flatMap((x) => x.info.volleys.map((v) => v.n)));
+  const after = panels.filter((x) => !x.name.boss && x.info.volleys.some((v) => bossVolleys.has(v.n - 1)));
+  const allBands = bandsOf(panels), afterBands = bandsOf(after);
+  const allSafe = [], afterSafe = [];
+  for (let y = -radius; y <= radius; y++) for (let x = -radius; x <= radius; x++) {
+    if (Math.hypot(x, y) > radius) continue;
+    const q = [c[0] + x * yd, c[1] + y * yd], cell = [q[0] / W, q[1] / H, x, y];
+    if (!afterBands.some((b) => inPoly(q, b))) afterSafe.push(cell);
+    if (!allBands.some((b) => inPoly(q, b))) allSafe.push(cell);
+  }
+  // Real outcomes within 3 yd of the always-clear area, across every combination.
+  let hits = 0, clean = 0;
+  for (const x of panels) for (const pt of x.panel.points) {
+    if (pt.group !== "Hit" && pt.group !== "Not hit") continue;
+    const [qx, qy] = px(pt.u, pt.v);
+    if (!allSafe.some(([u, v]) => Math.hypot(u * W - qx, v * H - qy) <= 3 * yd)) continue;
+    if (pt.group === "Hit") hits++; else clean++;
+  }
+  // Real check of the green area: hits and players not hit there, in the volleys right after a boss wave.
+  let afterHits = 0, afterClean = 0;
+  for (const x of after) for (const pt of x.panel.points) {
+    if (pt.group !== "Hit" && pt.group !== "Not hit") continue;
+    const q = px(pt.u, pt.v);
+    if (Math.hypot(q[0] - c[0], q[1] - c[1]) / yd > radius || afterBands.some((b) => inPoly(q, b))) continue;
+    if (pt.group === "Hit") afterHits++; else afterClean++;
+  }
+  return { allSafe, afterSafe, after, du: yd / W, dv: yd / H, hits, clean, radius, patches: patches(allSafe), afterHits, afterClean };
+}
+
+// Separate patches of one-yard cells (touching sides), biggest first, each with how far its middle is from the centre.
+function patches(cells) {
+  const key = (x, y) => x + "," + y, left = new Map(cells.map((q) => [key(q[2], q[3]), q])), out = [];
+  for (const start of cells) {
+    if (!left.has(key(start[2], start[3]))) continue;
+    const group = [], queue = [start]; left.delete(key(start[2], start[3]));
+    while (queue.length) {
+      const q = queue.pop(); group.push(q);
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const k = key(q[2] + dx, q[3] + dy);
+        if (left.has(k)) { queue.push(left.get(k)); left.delete(k); }
+      }
+    }
+    const x = group.reduce((a, q) => a + q[2], 0) / group.length, y = group.reduce((a, q) => a + q[3], 0) / group.length;
+    out.push({ cells: group, fromCentre: Math.hypot(x, y) });
+  }
+  return out.sort((a, b) => b.cells.length - a.cells.length);
+}
+
+// "About 26 yd past the centre (away from her), 10 yd toward her left": cells are in yards, x to her left, y away.
+function whereIs(cells) {
+  if (!cells.length) return "";
+  const x = cells.reduce((a, q) => a + q[2], 0) / cells.length, y = cells.reduce((a, q) => a + q[3], 0) / cells.length;
+  const along = Math.abs(y) < 3 ? "at the centre" : `about ${Math.round(Math.abs(y))} yd ${y > 0 ? "past the centre, away from her" : "from the centre toward her"}`;
+  const side = Math.abs(x) < 3 ? "" : `, ${Math.round(Math.abs(x))} yd toward her ${x > 0 ? "left" : "right"}`;
+  return along + side;
+}
+
+function renderStand(panels) {
+  const stand = document.getElementById("stand");
+  stand.replaceChildren();
+  const a = standAreas(panels);
+  const mark = panels[0]?.panel.points.find((p) => p.label === "B");
+  const panel = {
+    points: mark ? [mark] : [],
+    areas: [{ kind: "after", cells: a.afterSafe, du: a.du, dv: a.dv }, { kind: "all", cells: a.allSafe, du: a.du, dv: a.dv }],
+  };
+  const canvas = el("canvas", "map"); canvas.setAttribute("role", "img");
+  canvas.setAttribute("aria-label", "Map of the areas no wave path crosses");
+  stand.append(canvas); canvases.push({ canvas, panel });
+
+  const calls = el("div", "calls");
+  const all = el("div", "verdict weak");
+  // A usable spot is a patch at least ~5 x 5 yd that isn't hugging the rim.
+  const usable = a.patches.filter((q) => q.cells.length >= 25 && q.fromCentre <= a.radius - 6);
+  all.append(el("span", "label", usable.length ? "Never crossed · untested" : "No spot clear of every combination"));
+  if (!usable.length && a.allSafe.length) {
+    all.append(el("span", "why", `Only ${a.patches.length === 1 ? "a sliver" : `${a.patches.length} slivers`} along the edge of the platform (${a.patches.slice(0, 3).map((q) => `${q.cells.length} sq yd`).join(", ")}) ${a.patches.length === 1 ? "is" : "are"} never crossed, too thin and too close to where waves end to trust. Use the spot for each combination instead.`));
+  } else if (usable.length) {
+    all.append(el("span", "spot", usable.slice(0, 2).map((q) => `${q.cells.length} sq yd, ${whereIs(q.cells)}`).join("; ")),
+      el("span", "why", `No wave path from any of the ${panels.length} combinations crosses it. ` +
+        (a.hits + a.clean === 0 ? "Nobody stood there in these pulls, so it's only what the wave paths predict: worth testing with one ranged player first."
+          : `People stood near it ${a.hits + a.clean} times: ${a.hits} hit.`)));
+  } else all.append(el("span", "why", "Every point is crossed by at least one combination's waves."));
+  const after = el("div", "verdict good");
+  const afterRate = a.afterHits + a.afterClean ? Math.round(100 * a.afterHits / (a.afterHits + a.afterClean)) : null;
+  after.append(el("span", "label", "Safer right after a boss wave"),
+    el("span", "spot", `${a.afterSafe.length} sq yd, ${whereIs(a.afterSafe)}`),
+    el("span", "why", `Clear of the Gore Rattle volley that follows a boss wave (${a.after.map((x) => x.letter).join(", ")}), so after dodging her sweep, come back here. ` +
+      (afterRate == null ? "" : `In these pulls people stood there ${a.afterHits + a.afterClean} times and ${a.afterHits} were hit (${afterRate}%), so it's safer, not perfect.`)));
+  calls.append(all, after);
+  const dl = el("dl");
+  dl.append(el("dt", null, "Based on"), Object.assign(el("dd"), { textContent: "Waves about 11 yd either side of each path and the boss's 5-wave sweep as drawn on each map. Hits and players not hit are the real check; amber has no real data yet." }));
+  calls.append(dl);
+  stand.append(calls);
 }
 
 function drawAll() { paintLegend(); for (const { canvas, panel } of canvases) drawPanel(canvas, panel); }
