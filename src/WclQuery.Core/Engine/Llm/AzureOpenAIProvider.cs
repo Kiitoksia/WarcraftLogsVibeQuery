@@ -1,4 +1,5 @@
 using System.ClientModel;
+using System.ClientModel.Primitives;
 using Azure.AI.OpenAI;
 using Microsoft.Extensions.Options;
 using OpenAI.Responses;
@@ -42,7 +43,14 @@ public sealed class AzureOpenAIProvider : ILlmProvider
             || string.IsNullOrWhiteSpace(_options.Deployment))
             throw new InvalidOperationException("AzureOpenAI:Endpoint, AzureOpenAI:ApiKey and AzureOpenAI:Deployment must be set.");
 
-        var client = new AzureOpenAIClient(new Uri(_options.Endpoint), new ApiKeyCredential(_options.ApiKey));
+        // Rate limits (429) and server errors are retried with backoff, honouring retry-after, before the user sees
+        // an error; reasoning over a whole night's data can take longer than the default 100s.
+        var client = new AzureOpenAIClient(new Uri(_options.Endpoint), new ApiKeyCredential(_options.ApiKey),
+            new AzureOpenAIClientOptions
+            {
+                RetryPolicy = new ClientRetryPolicy(LlmLimits.MaxRetries),
+                NetworkTimeout = LlmLimits.RequestTimeout,
+            });
 #pragma warning disable OPENAI001
         _responses = client.GetResponsesClient();
 #pragma warning restore OPENAI001

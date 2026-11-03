@@ -22,9 +22,10 @@ public sealed class AnthropicOptions
 public sealed class AnthropicProvider(IOptions<AnthropicOptions> options) : ILlmProvider
 {
     private readonly AnthropicOptions _options = options.Value;
+    // Rate limits and overloads are retried with backoff (honouring retry-after) before the user sees an error.
     private readonly AnthropicClient _client = string.IsNullOrEmpty(options.Value.ApiKey)
-        ? new()
-        : new() { ApiKey = options.Value.ApiKey };
+        ? new() { MaxRetries = LlmLimits.MaxRetries, Timeout = LlmLimits.RequestTimeout }
+        : new() { ApiKey = options.Value.ApiKey, MaxRetries = LlmLimits.MaxRetries, Timeout = LlmLimits.RequestTimeout };
 
     // USD per million tokens, as of 2026-10. Update when prices change.
     private static readonly Dictionary<string, ModelPricing> Prices = new()

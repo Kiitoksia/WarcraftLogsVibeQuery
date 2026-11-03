@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.DataProtection;
 using WclQuery.Api.Auth;
 using WclQuery.Core;
 using WclQuery.Core.Engine;
+using WclQuery.Core.Engine.Llm;
 using WclQuery.Core.Knowledge;
 using WclQuery.Core.WarcraftLogs;
 
@@ -181,11 +182,9 @@ app.MapPost("/api/glossary/draft", async (GlossaryDraftRequest req, DiscordAuth 
     {
         return Results.BadRequest(new { error = ex.Message });
     }
-    catch (Exception ex) when (IsModelServiceError(ex))
+    catch (Exception ex) when (ModelFailure(ex, logger, "drafting the glossary", ct) is { } failure)
     {
-        logger.LogError(ex, "Model API call failed while drafting the glossary");
-        return Results.Json(new { error = "The AI service is unavailable right now. Try again shortly." },
-            statusCode: StatusCodes.Status502BadGateway);
+        return failure;
     }
 }).RequireRateLimiting("ask");
 
@@ -232,11 +231,9 @@ app.MapPost("/api/fight-notes/{encounterId:int}/rebuild", async (int encounterId
     {
         return Results.BadRequest(new { error = ex.Message });
     }
-    catch (Exception ex) when (IsModelServiceError(ex))
+    catch (Exception ex) when (ModelFailure(ex, logger, "rebuilding fight notes", ct) is { } failure)
     {
-        logger.LogError(ex, "Model API call failed while rebuilding fight notes");
-        return Results.Json(new { error = "The AI service is unavailable right now. Try again shortly." },
-            statusCode: StatusCodes.Status502BadGateway);
+        return failure;
     }
 }).RequireRateLimiting("ask");
 
@@ -277,7 +274,7 @@ app.MapPost("/api/ask", async (AskRequest req, DiscordAuth auth, QueryEngine eng
         return Results.BadRequest(new { error = "Invalid settings: the death cutoff must be 1-30 and the pull a valid fight." });
 
     logger.LogInformation("{User} asked about {Report}: {Question}", user.Name, code, req.Question);
-    return await RunAsync(() => engine.AskAsync(user.Id, user.Name, code, req.Question.Trim(), req.Fight ?? fight, settings, ct), logger);
+    return await RunAsync(() => engine.AskAsync(user.Id, user.Name, code, req.Question.Trim(), req.Fight ?? fight, settings, ct), logger, ct);
 }).RequireRateLimiting("ask");
 
 // Answers Claude's clarifying question, or asks a follow-up in the same conversation.
@@ -294,14 +291,19 @@ app.MapPost("/api/ask/{conversationId}/reply", async (string conversationId, Rep
         return Results.BadRequest(new { error = "Invalid settings: the death cutoff must be 1-30 and the pull a valid fight." });
 
     logger.LogInformation("{User} replied in {Conversation}: {Message}", user.Name, conversationId, req.Message);
-    return await RunAsync(() => engine.ReplyAsync(user.Id, conversationId, req.Message.Trim(), settings, ct), logger);
+    return await RunAsync(() => engine.ReplyAsync(user.Id, conversationId, req.Message.Trim(), settings, ct), logger, ct);
 }).RequireRateLimiting("ask");
 
 app.Run();
 
-// Errors from Claude (Anthropic SDK) or Azure OpenAI (System.ClientModel) calls.
-static bool IsModelServiceError(Exception ex) =>
-    ex is Anthropic.Exceptions.AnthropicApiException or System.ClientModel.ClientResultException;
+// A failed Claude / Azure OpenAI call (after the SDK's retries), as a response saying what went wrong (busy, timed out,
+// content filter, ...). Null when the exception isn't a model service error, so the catch filter passes it on.
+static IResult? ModelFailure(Exception ex, ILogger logger, string action, CancellationToken ct)
+{
+    if (ModelErrors.Describe(ex, requestAborted: ct.IsCancellationRequested) is not { } error) return null;
+    logger.LogError(ex, "Model call failed ({Kind}) while {Action}", error.Kind, action);
+    return Results.Json(new { error = error.Message }, statusCode: error.HttpStatus);
+}
 
 // Null means the settings were invalid.
 static QuerySettings? ToSettings(SettingsDto? dto)
@@ -312,7 +314,7 @@ static QuerySettings? ToSettings(SettingsDto? dto)
     return new QuerySettings { DeathCutoff = dto.DeathCutoff, Pull = dto.Pull, AllPulls = dto.Pull is null && dto.AllPulls == true };
 }
 
-static async Task<IResult> RunAsync(Func<Task<QueryResult>> run, ILogger logger)
+static async Task<IResult> RunAsync(Func<Task<QueryResult>> run, ILogger logger, CancellationToken ct)
 {
     try
     {
@@ -327,11 +329,9 @@ static async Task<IResult> RunAsync(Func<Task<QueryResult>> run, ILogger logger)
     {
         return Results.BadRequest(new { error = ex.Message });
     }
-    catch (Exception ex) when (IsModelServiceError(ex))
+    catch (Exception ex) when (ModelFailure(ex, logger, "answering a question", ct) is { } failure)
     {
-        logger.LogError(ex, "Model API call failed");
-        return Results.Json(new { error = "The AI service is unavailable right now. Try again shortly." },
-            statusCode: StatusCodes.Status502BadGateway);
+        return failure;
     }
 }
 
