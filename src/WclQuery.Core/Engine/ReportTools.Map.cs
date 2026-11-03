@@ -125,6 +125,22 @@ public sealed partial class ReportTools
             string.Join(" + ", members.Select(m => nameCasters ? $"{m.Spot + 1} ({m.Who})" : $"{m.Spot + 1}"));
 
         var volleys = Volleys(report, located);
+        // Optional: who got hit after each volley vs where unhit players stood, to look for safe areas.
+        var hitAbility = args.OptionalLong("hit_ability_id");
+        var windowMs = (long)(Math.Clamp(args.OptionalDouble("window_sec") ?? 10, 1, 30) * 1000);
+        var outcomes = hitAbility is long hitId && split is "volley" or "pattern"
+            ? await OutcomesAsync(report, q, volleys, hitId, windowMs, mapId, ct)
+            : null;
+        MapPoint OutcomePoint(Located l, string group)
+        {
+            var (u, v) = ToUv(l.WorldX, l.WorldY);
+            return new MapPoint(Math.Round(u, 4), Math.Round(v, 4), null, null, group);
+        }
+        List<MapPoint> OutcomePoints(IEnumerable<Volley> group, int maxSafe) => outcomes is null ? [] :
+        [
+            .. Thin([.. group.SelectMany(v => outcomes[v].Safe)], maxSafe).Select(l => OutcomePoint(l, "Not hit")),
+            .. group.SelectMany(v => outcomes[v].Hits).Select(l => OutcomePoint(l, "Hit")),
+        ];
         var text = new StringBuilder();
         text.AppendLine(DescribeWindow(report, q));
         text.AppendLine($"{located.Count} positions of the {side} on {gameMap?.Name ?? $"map {mapId}"}" +
@@ -142,7 +158,7 @@ public sealed partial class ReportTools
                 {
                     var members = Members(v);
                     panels.Add(new MapPanel($"Pull {v.Fight} · #{v.Index} at {Clock(v.Seconds)}", Describe(members),
-                        [.. members.Select(SpotPoint)]));
+                        [.. OutcomePoints([v], 600), .. members.Select(SpotPoint)]));
                 }
                 text.AppendLine($"{volleys.Count} volleys (events within {VolleyGapMs / 1000}s of each other){(volleys.Count > MaxPanels ? $", first {MaxPanels} drawn" : "")}:");
                 foreach (var v in volleys.Take(60))
@@ -168,9 +184,11 @@ public sealed partial class ReportTools
                     var median = atUsual[atUsual.Count / 2];
                     var subtitle = $"{group.Count}× · usually volley #{usual} · around {Clock(median)}";
                     if (panels.Count < MaxPanels)
-                        panels.Add(new MapPanel($"{name}: spots {g.Key}", subtitle, [.. g.First().Members.Select(SpotPoint)]));
+                        panels.Add(new MapPanel($"{name}: spots {g.Key}", subtitle,
+                            [.. OutcomePoints(group, 1200), .. g.First().Members.Select(SpotPoint)]));
                     var order = string.Join(", ", group.GroupBy(v => v.Index).OrderBy(x => x.Key).Select(x => $"#{x.Key} ×{x.Count()}"));
                     text.AppendLine($"  {name}: spots {g.Key}; seen {group.Count}× in {group.Select(v => v.Fight).Distinct().Count()} pulls; volley number {order}");
+                    if (outcomes is not null) DescribeOutcomes(text, group, outcomes, cx, cy);
                 }
                 break;
 
@@ -202,6 +220,9 @@ public sealed partial class ReportTools
             if (perPlayer.Count > 0)
                 text.AppendLine("Positions per player: " + string.Join(", ", perPlayer.Select(g => $"{g.Key} {g.Count()}")));
         }
+        if (outcomes is not null)
+            text.AppendLine($"Hits: where players stood when hit by the ability within {windowMs / 1000}s of a volley. Not hit: where players who weren't hit stood in that window (sampled from their casts). " +
+                "Areas are around the spots' centre: centre (<15 yd), mid (15-35 yd), edge. Call an area safe only if players stood there across several occurrences without hits; say how much data there is, and if hits are spread everywhere, say there's no reliable safe spot.");
         if (truncated) text.AppendLine($"WARNING: stopped after {MaxCountedEvents:N0} events; narrow it with ability_id, phase or fewer pulls.");
         text.AppendLine("The map is shown to the user below your answer; describe what it shows (spots by direction), don't draw it in text.");
 
@@ -216,6 +237,111 @@ public sealed partial class ReportTools
             panels,
             split is "volley" or "pattern" ? [.. Enumerable.Range(0, spots.Count).Select(i => SpotPoint((i, ""))) ] : []);
         return new ToolOutput(text.ToString(), Map: view);
+    }
+
+    private sealed record Outcome(List<Located> Hits, List<Located> Safe);
+
+    /// <summary>
+    /// For each volley, who got hit by <paramref name="hitAbility"/> within the window after it (where they stood when
+    /// hit), and where the players who weren't hit stood during that window (sampled about once a second from their
+    /// casts). Comparing the two per pattern shows whether there's a reliably safe area.
+    /// </summary>
+    private async Task<Dictionary<Volley, Outcome>> OutcomesAsync(Report report, ReportQuery q, List<Volley> volleys,
+        long hitAbility, long windowMs, int mapId, CancellationToken ct)
+    {
+        var outcomes = volleys.ToDictionary(v => v, _ => new Outcome([], []));
+        var byFight = volleys.GroupBy(v => v.Fight).ToDictionary(g => g.Key, g => g.OrderBy(v => v.Start).ToList());
+        Volley? WindowFor(int fight, long time) =>
+            byFight.TryGetValue(fight, out var list)
+                ? list.LastOrDefault(v => v.Start <= time && time < v.Start + windowMs)
+                : null;
+        bool IsPlayer(int id) => report.ActorsById.TryGetValue(id, out var a) && a.Type == "Player";
+
+        Located? Position(JsonElement e, int resourceActor, string idField)
+        {
+            if (GetInt(e, "resourceActor") != resourceActor || GetDouble(e, "x") is not double x || GetDouble(e, "y") is not double y
+                || GetInt(e, "mapID") != mapId || GetInt(e, idField) is not int id || !IsPlayer(id))
+                return null;
+            return new Located(GetInt(e, "fight") ?? 0, (long)(GetDouble(e, "timestamp") ?? 0), id, report.ActorName(id),
+                y / 100, WclXToWorldY * x / 100, mapId);
+        }
+
+        var basis = new ReportQuery
+        {
+            StartTime = q.StartTime, EndTime = q.EndTime, FightIds = q.FightIds, DataType = "DamageTaken",
+            WipeCutoff = q.WipeCutoff, IncludeResources = true,
+        };
+        var hitBy = volleys.ToDictionary(v => v, _ => new HashSet<int>());
+        await wcl.ForEachEventPageAsync(reportCode, basis with { AbilityId = hitAbility }, MaxCountedEvents, events =>
+        {
+            foreach (var e in events)
+            {
+                if (GetString(e, "type") != "damage" || Position(e, 2, "targetID") is not { } l) continue;
+                if (WindowFor(l.Fight, l.Time) is { } v && hitBy[v].Add(l.ActorId)) outcomes[v].Hits.Add(l);
+            }
+        }, ct);
+
+        var lastSample = new Dictionary<(Volley, int), long>();
+        await wcl.ForEachEventPageAsync(reportCode,
+            basis with { DataType = "Casts", HostilityType = "Friendlies", FilterExpression = "type = \"cast\"" }, MaxCountedEvents, events =>
+        {
+            foreach (var e in events)
+            {
+                if (Position(e, 1, "sourceID") is not { } l || WindowFor(l.Fight, l.Time) is not { } v) continue;
+                if (lastSample.TryGetValue((v, l.ActorId), out var last) && l.Time - last < 1000) continue;
+                lastSample[(v, l.ActorId)] = l.Time;
+                outcomes[v].Safe.Add(l);
+            }
+        }, ct);
+
+        // A player who was hit in the window isn't a "safe" sample for it, wherever else they stood.
+        foreach (var (v, o) in outcomes) o.Safe.RemoveAll(l => hitBy[v].Contains(l.ActorId));
+        return outcomes;
+    }
+
+    /// <summary>A coarse area of the platform around the spots' centre, e.g. "north-west edge" or "centre".</summary>
+    private static string Zone(Located l, double cx, double cy)
+    {
+        var (dir, dist, _) = Bearing(new Spot(l.WorldX, l.WorldY), cx, cy);
+        return dist < 15 ? "centre" : dist < 35 ? $"{dir}, mid" : $"{dir} edge";
+    }
+
+    /// <summary>
+    /// Per area: how often players there were hit after this pattern, against how often players stood there and
+    /// weren't. An area with players in several occurrences and no hits is a candidate safe spot.
+    /// </summary>
+    private static void DescribeOutcomes(StringBuilder text, List<Volley> group, Dictionary<Volley, Outcome> outcomes,
+        double cx, double cy)
+    {
+        var hits = group.Sum(v => outcomes[v].Hits.Count);
+        var safePlayers = group.Sum(v => outcomes[v].Safe.Select(l => l.ActorId).Distinct().Count());
+        text.AppendLine($"    outcome: {hits} hits vs {safePlayers} player-times not hit ({(hits + safePlayers > 0 ? 100.0 * hits / (hits + safePlayers) : 0):0}% hit)");
+
+        var zones = new Dictionary<string, (int Hits, int Safe, int Occurrences, int CleanOccurrences)>();
+        foreach (var v in group)
+        {
+            var o = outcomes[v];
+            var hitZones = o.Hits.GroupBy(l => Zone(l, cx, cy)).ToDictionary(g => g.Key, g => g.Count());
+            // Each unhit player counts once, in the area they spent most of the window in.
+            var safeZones = o.Safe.GroupBy(l => l.ActorId)
+                .Select(p => p.GroupBy(l => Zone(l, cx, cy)).MaxBy(z => z.Count())!.Key)
+                .GroupBy(z => z).ToDictionary(g => g.Key, g => g.Count());
+            foreach (var z in hitZones.Keys.Union(safeZones.Keys))
+            {
+                var h = hitZones.GetValueOrDefault(z);
+                var s = safeZones.GetValueOrDefault(z);
+                var cur = zones.GetValueOrDefault(z);
+                zones[z] = (cur.Hits + h, cur.Safe + s, cur.Occurrences + 1, cur.CleanOccurrences + (h == 0 ? 1 : 0));
+            }
+        }
+        var safe = zones.Where(z => z.Value.Occurrences >= 3 && z.Value.Hits <= z.Value.Safe / 20)
+            .OrderByDescending(z => z.Value.Safe).Take(4).ToList();
+        var risky = zones.Where(z => z.Value.Hits > 0).OrderByDescending(z => (double)z.Value.Hits / (z.Value.Hits + z.Value.Safe))
+            .ThenByDescending(z => z.Value.Hits).Take(4).ToList();
+        text.AppendLine("    safe-looking areas: " + (safe.Count == 0 ? "none with enough data"
+            : string.Join("; ", safe.Select(z => $"{z.Key} (players there in {z.Value.Occurrences} of {group.Count}, clean {z.Value.CleanOccurrences}×, {z.Value.Hits} hits / {z.Value.Safe} not hit)"))));
+        text.AppendLine("    most-hit areas: " + (risky.Count == 0 ? "none"
+            : string.Join("; ", risky.Select(z => $"{z.Key} ({z.Value.Hits} hits / {z.Value.Safe} not hit)"))));
     }
 
     private sealed class Spot(double x, double y)
@@ -252,7 +378,7 @@ public sealed partial class ReportTools
         return (distance < 3 ? "centre" : names[(int)Math.Round(degrees / 45) % 8], distance, degrees);
     }
 
-    private sealed record Volley(int Fight, int Index, double Seconds, List<Located> Events);
+    private sealed record Volley(int Fight, int Index, double Seconds, long Start, List<Located> Events);
 
     /// <summary>Events in the same pull within a couple of seconds of each other, e.g. two waves cast together.</summary>
     private static List<Volley> Volleys(Report report, List<Located> located)
@@ -269,7 +395,7 @@ public sealed partial class ReportTools
                 if (current is null || l.Time - last > VolleyGapMs)
                 {
                     current = [];
-                    volleys.Add(new Volley(f.Key, ++index, (l.Time - start) / 1000.0, current));
+                    volleys.Add(new Volley(f.Key, ++index, (l.Time - start) / 1000.0, l.Time, current));
                 }
                 current.Add(l);
                 last = l.Time;
@@ -311,6 +437,8 @@ public sealed partial class ReportTools
             ["event_type"] = Prop(new { type = "string", description = "Only this event type, e.g. damage, cast. Positions come with damage, heal and cast events." }),
             ["position_of"] = Prop(new { type = "string", @enum = new[] { "source", "target" }, description = "Whose position to draw. Default: target for DamageTaken/Debuffs/Buffs/Deaths (the player hit), source otherwise (the caster)." }),
             ["split_by"] = Prop(new { type = "string", @enum = new[] { "none", "pull", "volley", "pattern" }, description = "none: one map. pull: one map per pull. volley: one map per group of events within 2s (e.g. each wave cast). pattern: volleys that used the same spots merged into one map each, with how often and when they happen." }),
+            ["hit_ability_id"] = Prop(new { type = "integer", description = "With split_by pattern or volley: the ability that hits players (e.g. the wave damage id). Each map then also shows where players got hit after the volley (red) and where players stood without being hit (green), and the text lists safe-looking and most-hit areas per pattern. Use it for 'is there a safe spot' questions." }),
+            ["window_sec"] = Prop(new { type = "number", description = "With hit_ability_id: seconds after each volley to count hits and positions (default 10)." }),
             ["style"] = Prop(new { type = "string", @enum = new[] { "heat", "dots" }, description = "heat (density) or dots (coloured by class, numbered spots). Default: heat for 100+ points on one map, dots otherwise. Use heat when the user asks for a heatmap." }),
         };
         return new Tool
@@ -323,6 +451,7 @@ public sealed partial class ReportTools
                 use hostility Enemies for NPC casts such as waves or adds spawning). Buff/debuff applications and deaths
                 have no position: use the damage events instead (e.g. killing blows: DamageTaken with filter
                 "overkill > 0"). For "what patterns do the waves come in", map the ability's NPC casts with
+                split_by pattern. For "is there a safe spot per pattern", add hit_ability_id (the damage that hits players).
                 split_by pattern. Returns the spots (by compass direction) and patterns as text.
                 """,
             InputSchema = new() { Properties = props, Required = ["data_type"] },

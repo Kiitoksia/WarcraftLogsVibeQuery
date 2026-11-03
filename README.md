@@ -125,6 +125,8 @@ then the guild glossary, then the journal. Entries are cached for a day.
 `show_map` draws positions from the log on the raid's in-game map: heatmaps of where people got hit or stood,
 where NPCs cast from, and spawn patterns (e.g. "what patterns do the waves come in": each group of casts within
 2s is a volley, and volleys from the same spots are merged into a pattern with how often and when it comes).
+With `hit_ability_id`, each pattern also shows where players got hit after it (red) against where unhit players
+stood (green), and the AI lists the areas that stayed clean across occurrences: a data-driven "safe spot" check.
 Positions come with damage, heal and cast events (`includeResources`); Warcraft Logs' map id is the game's UiMap id.
 
 Map images and their coordinate bounds come from the game's data via [wago.tools](https://wago.tools) and are

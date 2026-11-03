@@ -641,7 +641,9 @@
   // ---- Maps: positions from the log on the raid's in-game map ---------------------------
 
   // NPC groups (the boss, its adds) get fixed colours in order of appearance; players use class colours.
-  const GROUP_COLORS = ["#ff5a4f", "#4fd1c5", "#ffd166", "#b794f4", "#90cdf4", "#f6ad55"];
+  const GROUP_COLORS = ["#ffd166", "#4fd1c5", "#b794f4", "#90cdf4", "#f6ad55", "#ff5a4f"];
+  // Safe-spot maps: where players got hit after a volley vs where unhit players stood.
+  const OUTCOME_COLORS = { "Hit": "#ff3b30", "Not hit": "#5ee08a" };
   const mapImages = new Map(); // image url -> Promise<HTMLImageElement | null>
 
   function loadMapImage(url) {
@@ -661,7 +663,8 @@
     panel.append(el("h3", "chart-title", view.title));
 
     const groups = [...new Set(view.panels.flatMap((p) => p.points.map((pt) => pt.group)).filter(Boolean))];
-    const groupColor = (g) => GROUP_COLORS[groups.indexOf(g) % GROUP_COLORS.length];
+    const npcGroups = groups.filter((g) => !OUTCOME_COLORS[g]);
+    const groupColor = (g) => OUTCOME_COLORS[g] || GROUP_COLORS[npcGroups.indexOf(g) % GROUP_COLORS.length];
     const pointColor = (pt) => pt.actor != null
       ? CLASS_COLORS[view.actors[pt.actor]?.class] || FALLBACK_COLORS[0]
       : pt.group ? groupColor(pt.group) : FALLBACK_COLORS[0];
@@ -789,13 +792,16 @@
     }
     for (const pt of points) {
       const x = toX(pt.u), y = toY(pt.v);
+      const notHit = pt.group === "Not hit";
+      ctx.globalAlpha = notHit ? 0.45 : 1;
       ctx.fillStyle = pointColor(pt);
       ctx.strokeStyle = "rgba(0,0,0,0.85)";
-      ctx.lineWidth = 1.5 * scale;
+      ctx.lineWidth = (notHit ? 0 : 1.5) * scale;
       ctx.beginPath();
-      ctx.arc(x, y, (pt.label ? 11 : 3.5) * scale, 0, Math.PI * 2);
+      ctx.arc(x, y, (pt.label ? 11 : notHit ? 2.5 : pt.group === "Hit" ? 4.5 : 3.5) * scale, 0, Math.PI * 2);
       ctx.fill();
-      ctx.stroke();
+      if (!notHit) ctx.stroke();
+      ctx.globalAlpha = 1;
       if (pt.label) {
         ctx.fillStyle = "#111";
         ctx.font = `700 ${12 * scale}px Inter, system-ui, sans-serif`;

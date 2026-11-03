@@ -196,6 +196,8 @@ public sealed partial class QueryEngine(
           For spawn patterns (e.g. "what patterns do the waves come in"), map the NPC casts of every related ability
           (hostility Enemies, event_type cast, position_of source, the boss's own version too) across all_boss_pulls
           with split_by pattern, then describe each pattern by compass direction and when it comes (volley number).
+          For "is there a safe spot" add hit_ability_id (the damage those waves/adds do to players) and report, per
+          pattern, the areas that stayed clean across many occurrences, how much data backs it, and the most-hit areas.
         - Ninja/early pulls: use get_pull_timeline and identify the first player who engaged.
         - Deaths: get_table or get_events with data_type Deaths.
         - Settings: the user can pin the scope in the site (one pull, or all pulls) and switch on filters (e.g.
