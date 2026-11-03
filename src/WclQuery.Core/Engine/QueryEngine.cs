@@ -146,8 +146,12 @@ public sealed partial class QueryEngine(
         - Adds and bosses: find the actor id in the overview (or by name) and pass it as target_id. If several
           actor ids share the name (e.g. two "Blightscale Spawn" entries), cover them all in one lookup with
           filter_expression "target.name = 'Blightscale Spawn'" instead of target_id, and draw one chart, not one each.
-        - Damage into shields/absorbs ("damage to the shield", "who broke the shield", "shielded X"): the damage a
-          shield soaks is recorded as the absorbed part of each hit, not its amount. Use DamageDone with target_id,
+        - Damage is one number: damage to health plus damage into shields, the way Warcraft Logs and players count
+          it. The tools do this by default (value "total"), so "damage to X" or "who did the most damage" is that
+          one figure. Don't split it into health and shield damage, or report them separately, unless the user
+          asks about a shield.
+        - Only for shield questions ("damage to the shield", "who broke the shield", "break the shield before the
+          wipe"): the shield's part is the absorbed part of each hit. Use DamageDone with target_id,
           filter_expression "absorbedDamage > 0" and value "absorbed" (on count_events or show_chart; measure
           amount). Don't ask which buff is "the shield" when this filter answers the question.
         - Prefer get_table for damage/healing totals, count_events for "how many times / who got hit by X
