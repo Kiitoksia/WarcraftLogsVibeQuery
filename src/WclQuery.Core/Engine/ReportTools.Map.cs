@@ -151,6 +151,29 @@ public sealed partial class ReportTools
             .. Thin([.. group.SelectMany(v => outcomes[v].Safe)], maxSafe).Select(l => OutcomePoint(l, "Not hit")),
             .. group.SelectMany(v => outcomes[v].Hits).Select(l => OutcomePoint(l, "Hit")),
         ];
+        // The boss's own wave sweep covers one side in front of it, and which side isn't in the log (it's shown by an
+        // animation). The raid gives it away: in the first seconds after the cast everyone sidesteps ~12 yd to the safe
+        // side. Mark each boss cast with the side its waves cover, so patterns split by it and lanes cover that half.
+        var bossNames = report.Fights.Where(f => f.IsBoss).Select(f => f.Name).ToHashSet();
+        var sweeps = 0;
+        if (outcomes is not null)
+            foreach (var v in volleys)
+                for (var i = 0; i < v.Events.Count; i++)
+                {
+                    var b = v.Events[i];
+                    if (!bossNames.Contains(b.Who) || b.Facing is null) continue;
+                    var (hn, hw) = Heading(b.Facing.Value);
+                    var raid = outcomes[v].Safe.Concat(outcomes[v].Hits)
+                        .Where(l => l.Time >= b.Time && l.Time < b.Time + SweepReactionMs).ToList();
+                    if (raid.Count < 5) continue;
+                    var left = raid.Average(l => (l.WorldX - b.WorldX) * -hw + (l.WorldY - b.WorldY) * hn);
+                    if (Math.Abs(left) < 4) continue;
+                    var marked = b with { Who = $"{b.Who} (waves on its {(left > 0 ? "right" : "left")})" };
+                    spotOf[marked] = spotOf.GetValueOrDefault(b, -1);
+                    v.Events[i] = marked;
+                    sweeps++;
+                }
+
         // Moving hazards cast from a spot (e.g. waves) travel straight along the caster's facing. With hit data, the
         // hits give their speed (along the lane over time since the cast) and width (how far to the side hits land).
         static (double North, double West) Heading(double facing) => (-Math.Sin(facing), -Math.Cos(facing));
@@ -188,9 +211,9 @@ public sealed partial class ReportTools
         }
 
         // One lane per (spot, caster) in a group of volleys: the average heading of the casts from that spot.
-        List<(int Spot, string Who, double North, double West, double Spread)> LaneHeadings(IEnumerable<Volley> group)
+        List<Lane> LaneHeadings(IEnumerable<Volley> group)
         {
-            var list = new List<(int Spot, string Who, double North, double West, double Spread)>();
+            var list = new List<Lane>();
             foreach (var g in group.SelectMany(v => v.Events).Where(e => e.Facing is not null && spotOf[e] >= 0)
                          .GroupBy(e => (Spot: spotOf[e], e.Who)))
             {
@@ -200,7 +223,20 @@ public sealed partial class ReportTools
                 if (len < 1e-6) continue;
                 // Spread: average angle between each cast and the mean, so inconsistent facings are visible.
                 var spread = dirs.Average(d => Math.Acos(Math.Clamp((d.North * n + d.West * w) / len, -1, 1))) * 180 / Math.PI;
-                list.Add((g.Key.Spot, g.Key.Who, n / len, w / len, spread));
+                var (hn, hw) = (n / len, w / len);
+                var start = spots[g.Key.Spot];
+                // The boss's sweep: five parallel waves across the covered half in front of it (see SweepSide).
+                if (SweepRegex().Match(g.Key.Who) is { Success: true } m)
+                {
+                    var sign = m.Groups["side"].Value == "left" ? 1 : -1;
+                    var (ln, lw) = (-hw * sign, hn * sign); // the boss's left (or right) as it faces along the heading
+                    for (var i = 0; i < SweepWaves; i++)
+                    {
+                        var offset = SweepFirstOffset + i * SweepSpacing;
+                        list.Add(new Lane(g.Key.Spot, g.Key.Who, hn, hw, spread, start.X + ln * offset, start.Y + lw * offset));
+                    }
+                }
+                else list.Add(new Lane(g.Key.Spot, g.Key.Who, hn, hw, spread, start.X, start.Y));
             }
             return list;
         }
@@ -208,7 +244,7 @@ public sealed partial class ReportTools
         double[] Uv(double wx, double wy) { var (u, v) = ToUv(wx, wy); return [Math.Round(u, 4), Math.Round(v, 4)]; }
         List<MapLane> Lanes(IEnumerable<Volley> group) => [.. LaneHeadings(group).Select(h =>
         {
-            var s = spots[h.Spot];
+            var s = (X: h.X, Y: h.Y);
             var length = LaneLength(h.Spot);
             var (ex, ey) = (s.X + h.North * length, s.Y + h.West * length);
             List<double[]>? band = null;
@@ -236,15 +272,15 @@ public sealed partial class ReportTools
                               "south", "south-south-west", "south-west", "west-south-west", "west", "west-north-west", "north-west", "north-north-west"];
             var groupList = group.ToList();
             // How many of this pattern's hits line up with each lane: a lane no hits match is unconfirmed.
-            int Support((int Spot, string Who, double North, double West, double Spread) h) => outcomes is null ? -1 :
+            int Support(Lane h) => outcomes is null ? -1 :
                 groupList.SelectMany(v => outcomes[v].Hits).Count(hit =>
                 {
-                    var s = spots[h.Spot];
+                    var s = (X: h.X, Y: h.Y);
                     var along = (hit.WorldX - s.X) * h.North + (hit.WorldY - s.Y) * h.West;
                     var side = Math.Abs((hit.WorldX - s.X) * h.West - (hit.WorldY - s.Y) * h.North);
                     return along > 0 && side <= (laneHalfWidth ?? 8) * 1.5;
                 });
-            foreach (var h in headings)
+            foreach (var h in headings.DistinctBy(h => (h.Spot, h.Who)))
             {
                 var bearing = (Math.Atan2(-h.West, h.North) * 180 / Math.PI + 360) % 360;
                 var cross = laneSpeed is double sp ? $", crosses in ~{LaneLength(h.Spot) / sp:0}s" : "";
@@ -259,14 +295,14 @@ public sealed partial class ReportTools
             {
                 var through = headings.Where(h =>
                 {
-                    var s = spots[h.Spot];
+                    var s = (X: h.X, Y: h.Y);
                     var along = (zx - s.X) * h.North + (zy - s.Y) * h.West;
                     if (along < -hw || along > LaneLength(h.Spot) + hw) return false;
                     return Math.Abs((zx - s.X) * h.West - (zy - s.Y) * h.North) <= hw;
                 }).ToList();
                 if (through.Count == 0) clear.Add(zone);
                 else crossed.Add(laneSpeed is double sp
-                    ? $"{zone} (~{through.Min(h => Math.Max(0, (zx - spots[h.Spot].X) * h.North + (zy - spots[h.Spot].Y) * h.West) / sp):0}s)"
+                    ? $"{zone} (~{through.Min(h => Math.Max(0, (zx - h.X) * h.North + (zy - h.Y) * h.West) / sp):0}s)"
                     : zone);
             }
             sb.AppendLine($"    between the lanes (no wave path within {hw:0} yd): {(clear.Count == 0 ? "nowhere" : string.Join(", ", clear))}");
@@ -370,6 +406,10 @@ public sealed partial class ReportTools
                 string.Join(", ", frame.Seen.Select(x => $"{x.Where} ({x.Count} casts)")) + ". Describe positions relative to the boss.");
         else if (relativeTo == "boss")
             text.AppendLine("Couldn't find where the boss stood, so the map is not turned to the boss.");
+        if (sweeps > 0)
+            text.AppendLine($"Boss sweeps: the log doesn't say which side the boss's waves cover, so it's read from the raid: in the {SweepReactionMs / 1000}s after " +
+                $"each boss cast the raid sidestepped to one side; the other side is marked as covered (\"waves on its left/right\", from the boss's view) " +
+                $"and drawn as {SweepWaves} parallel waves across that half. {sweeps} boss casts were marked this way. Say that the side is inferred from how the raid moved.");
         if (truncated) text.AppendLine($"WARNING: stopped after {MaxCountedEvents:N0} events; narrow it with ability_id, phase or fewer pulls.");
         text.AppendLine("The map is shown to the user below your answer; describe what it shows (spots by direction), don't draw it in text.");
 
@@ -483,6 +523,17 @@ public sealed partial class ReportTools
         return ((A * (b.Y - c.Y) + B * (c.Y - a.Y) + C * (a.Y - b.Y)) / d,
                 (A * (c.X - b.X) + B * (a.X - c.X) + C * (b.X - a.X)) / d);
     }
+
+    private readonly record struct Lane(int Spot, string Who, double North, double West, double Spread, double X, double Y);
+
+    // The boss's sweep, as drawn: parallel waves starting this far to the side of the boss and this far apart (yd).
+    private const int SweepWaves = 5;
+    private const double SweepFirstOffset = 4;
+    private const double SweepSpacing = 10;
+    private const long SweepReactionMs = 3_000;
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"\(waves on its (?<side>left|right)\)")]
+    private static partial System.Text.RegularExpressions.Regex SweepRegex();
 
     private sealed record Outcome(List<Located> Hits, List<Located> Safe);
 
